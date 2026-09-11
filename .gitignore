@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.log
+tsconfig.tsbuildinfo
+
+# Env (never commit real credentials)
+.env
+.env.local
+
+# Postgres data (when using compose volume bind locally)
+pgdata/
