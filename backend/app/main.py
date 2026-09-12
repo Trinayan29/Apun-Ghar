@@ -2,8 +2,11 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 from .db import engine
+from .users import router as users_router
 
 app = FastAPI(title="Rent API")
+
+app.include_router(users_router)
 
 
 @app.get("/healthz")

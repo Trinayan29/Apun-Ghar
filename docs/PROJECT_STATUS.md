@@ -115,6 +115,20 @@ project unless it becomes genuinely necessary.
   cascade); full suite green. No auth logic, endpoints, or role
   mutation in this slice.
 
+## Phase 1 — Slice 2C: provisioning + GET /users/me (COMPLETE)
+
+* `app/users.py`: `get_or_create_current_user` (UID from verified
+  claims; existing user synced for email/email_verified with
+  collision-safe updates, display_name set only at creation; new user +
+  empty profile in one transaction, role `STUDENT`; UNIQUE-race retry
+  via rollback + re-query) and `GET /api/v1/users/me` (8-field
+  `UserRead` response, no claim leakage). No profile endpoints, no role
+  mutation.
+* 9 endpoint tests (401s, create/reuse, sync policy, UID-not-email,
+  collision paths, race recovery, 500-not-401, no-leak); live emulator
+  integration verified (create → reuse without duplicates → 401 on bad
+  token); dev database left clean.
+
 ## Phase 1 plan — Authentication + Profiles (NOT started)
 
 Nothing below is implemented. Firebase is not configured.
