@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+  /* Apun-Ghar: warm neutrals lead, deep teal marks brand/trust moments */
+  --color-brand-50: #e5f2ef;
+  --color-brand-100: #cfe7e1;
+  --color-brand-200: #a3d1c6;
+  --color-brand-500: #14705f;
+  --color-brand-600: #0b5d56;
+  --color-brand-700: #0a4a43;
+  --color-brand-800: #083b36;
+
+  --color-accent-400: #e8a33d;
+  --color-accent-500: #d99020;
+  --color-accent-600: #b45309;
+
+  --color-clay-500: #d9775f;
+  --color-clay-600: #bd5f47;
+  --color-clay-50: #fbeee9;
+
+  --color-paper: #f7f4ee;
+  --color-cream: #f1ebe0;
+  --color-line: #e5e0d7;
+  --color-ink: #17201e;
+  --color-muted: #6b7470;
+}
+
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+/* thin scrollbars inside horizontal strips */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
