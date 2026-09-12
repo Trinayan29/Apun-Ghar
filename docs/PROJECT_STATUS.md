@@ -129,6 +129,19 @@ project unless it becomes genuinely necessary.
   integration verified (create → reuse without duplicates → 401 on bad
   token); dev database left clean.
 
+## Phase 1 — Slice 2D: self profile + role enforcement (COMPLETE)
+
+* `GET /api/v1/users/me/profile` and `PATCH /api/v1/users/me/profile`
+  (partial updates, explicit-null clearing, 422 on bad budgets/range/
+  unknown fields; identity and role fields unpatchable; profile always
+  resolved from the verified token, never a client user ID).
+* `auth.get_current_user` + reusable `require_role(...)` (role from the
+  PostgreSQL record only; 401 unauthenticated, 403 wrong role). No
+  business endpoints use it yet; no role mutation exists.
+* 21 profile/role tests green; live emulator integration verified
+  (empty profile → PATCH → persisted; bad token → 401); dev database
+  left clean.
+
 ## Phase 1 plan — Authentication + Profiles (NOT started)
 
 Nothing below is implemented. Firebase is not configured.
