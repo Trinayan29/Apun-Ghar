@@ -102,6 +102,19 @@ project unless it becomes genuinely necessary.
   `.env.example`); production uses `GOOGLE_APPLICATION_CREDENTIALS`
   (never committed).
 
+## Phase 1 — Slice 2B: user models + migration (COMPLETE)
+
+* `User` (`users`: integer PK, unique `firebase_uid`, unique nullable
+  `email`, `email_verified`, `role` default `STUDENT` with DB CHECK,
+  timestamps) and `UserProfile` (`user_profiles`: PK+FK `user_id` with
+  `ON DELETE CASCADE`, all-optional college/workplace/budgets/move-in
+  date, non-negative budget CHECKs).
+* Single migration `0002` (down_revision `0001`); upgrade → downgrade →
+  upgrade round-trip verified against the local container database.
+* 9 model tests (defaults, role/UID/email/budget constraints, FK,
+  cascade); full suite green. No auth logic, endpoints, or role
+  mutation in this slice.
+
 ## Phase 1 plan — Authentication + Profiles (NOT started)
 
 Nothing below is implemented. Firebase is not configured.
