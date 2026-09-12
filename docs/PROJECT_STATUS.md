@@ -94,6 +94,14 @@ never touch it. A real production Firebase project will be configured
 later; do NOT create one now, and do NOT create a separate development
 project unless it becomes genuinely necessary.
 
+## Phase 1 — Slice 2A: backend token verification (in progress)
+
+* `firebase-admin` dependency; `app/auth.py` verifies Bearer ID tokens
+  via the Admin SDK and returns claims, else 401. No user sync yet.
+* Local dev sets `FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099` (in
+  `.env.example`); production uses `GOOGLE_APPLICATION_CREDENTIALS`
+  (never committed).
+
 ## Phase 1 plan — Authentication + Profiles (NOT started)
 
 Nothing below is implemented. Firebase is not configured.
