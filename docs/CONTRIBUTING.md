@@ -123,6 +123,7 @@ alembic upgrade head
 
 Do NOT introduce Redis, Elasticsearch/OpenSearch, background workers,
 WebSockets, event buses, microservices, Kubernetes, payments, government-
-ID/KYC handling, or native video processing without explicit architecture
-approval. If a phase seems to need one of these, write down the concrete
-requirement first and get agreement before adding it.
+ID/KYC handling, native video processing, or Phone OTP / SMS
+authentication without explicit architecture approval. If a phase seems
+to need one of these, write down the concrete requirement first and get
+agreement before adding it.

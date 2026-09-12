@@ -18,3 +18,7 @@ tsconfig.tsbuildinfo
 
 # Postgres data (when using compose volume bind locally)
 pgdata/
+
+# Firebase emulator runtime logs
+firebase-debug.log
+firestore-debug.log

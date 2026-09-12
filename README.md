@@ -48,8 +48,9 @@ Database:
 
 Planned, not yet implemented:
 
-* Authentication: Firebase Authentication (phone OTP + Google) — planned
-  for Phase 1. Nothing is configured yet.
+* Authentication: Firebase Authentication (Email/Password + Google
+  Sign-In) — planned for Phase 1. Phone OTP is explicitly deferred to a
+  future enhancement. Nothing is configured yet.
 * Object storage: S3-compatible storage for property media — planned for
   when uploads are built. Nothing is configured yet.
 
@@ -252,6 +253,19 @@ npm run typecheck
 npm run build
 ```
 
+### Firebase Auth Emulator (local auth development)
+
+Apun-Ghar uses the Firebase Auth Emulator during local development —
+no real Firebase project or billing is involved. It is already
+configured in `firebase.json`. From the repository root:
+
+```powershell
+firebase emulators:start --only auth --project demo-apun-ghar
+```
+
+Auth API: `http://127.0.0.1:9099`. Emulator UI: `http://127.0.0.1:4000`.
+Stop with `Ctrl+C`. See `docs/PROJECT_STATUS.md` for status and details.
+
 ## Useful commands
 
 Database (from repository root):
@@ -309,7 +323,9 @@ Branch and commit conventions: see `docs/CONTRIBUTING.md`.
 Work lands incrementally, one phase at a time:
 
 * Phase 0 — Foundation — **COMPLETE**
-* Phase 1 — Authentication + Profiles — NEXT
+* Phase 1 — Authentication + Profiles — NEXT (Firebase Email/Password +
+  Google Sign-In, FastAPI token verification, PostgreSQL users/roles/
+  profiles; full scope in `docs/PROJECT_STATUS.md`, Phone OTP deferred)
 * Phase 2 — Listings
 * Phase 3 — Search + Filters
 * Phase 4 — Property Details + Favorites + Compare
