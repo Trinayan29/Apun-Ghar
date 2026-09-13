@@ -1,1 +1,33 @@
 @import "tailwindcss";
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  --color-brand-50: #e5f2ef;
+  --color-brand-100: #cfe7e1;
+  --color-brand-600: #0b5d56;
+  --color-brand-700: #0a4a43;
+  --color-brand-800: #083b36;
+
+  --color-accent-500: #d99020;
+
+  --color-paper: #f7f4ee;
+  --color-line: #e5e0d7;
+  --color-ink: #17201e;
+  --color-muted: #6b7470;
+}
+
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand-600);
+  outline-offset: 2px;
+}
