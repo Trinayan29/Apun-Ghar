@@ -105,7 +105,8 @@ def test_empty_profile_is_valid(db):
     db.add(UserProfile(user_id=user_id))
     db.flush()
     profile = db.query(UserProfile).one()
-    assert profile.college is None
+    assert profile.college_location_id is None
+    assert profile.workplace_location_id is None
     assert profile.budget_min is None
 
 
@@ -116,8 +117,15 @@ def test_profile_fk_requires_user(db):
 
 
 def test_delete_user_cascades_profile(db):
+    from app.models import Location
+
+    college = (
+        db.query(Location).filter(Location.type == "college").first()
+    )
     user = _user()
-    user.profile = UserProfile(college="Test College")
+    user.profile = UserProfile(
+        college_location_id=college.id if college is not None else None
+    )
     db.add(user)
     db.flush()
     assert db.query(UserProfile).count() == 1

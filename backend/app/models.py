@@ -56,8 +56,12 @@ class UserProfile(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
-    college: Mapped[str | None] = mapped_column(String(200))
-    workplace: Mapped[str | None] = mapped_column(String(200))
+    college_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id", ondelete="RESTRICT")
+    )
+    workplace_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("locations.id", ondelete="RESTRICT")
+    )
     budget_min: Mapped[int | None]
     budget_max: Mapped[int | None]
     move_in_date: Mapped[date | None]
@@ -69,3 +73,9 @@ class UserProfile(Base):
     )
 
     user: Mapped[User] = relationship(back_populates="profile")
+    college_location: Mapped[Location | None] = relationship(
+        foreign_keys=[college_location_id]
+    )
+    workplace_location: Mapped[Location | None] = relationship(
+        foreign_keys=[workplace_location_id]
+    )
