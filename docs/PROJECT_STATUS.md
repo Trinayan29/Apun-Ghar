@@ -105,7 +105,7 @@ project unless it becomes genuinely necessary.
 ## Phase 1 — Slice 2B: user models + migration (COMPLETE)
 
 * `User` (`users`: integer PK, unique `firebase_uid`, unique nullable
-  `email`, `email_verified`, `role` default `STUDENT` with DB CHECK,
+  `email`, `email_verified`, `role` default `USER` with DB CHECK,
   timestamps) and `UserProfile` (`user_profiles`: PK+FK `user_id` with
   `ON DELETE CASCADE`, all-optional college/workplace/budgets/move-in
   date, non-negative budget CHECKs).
@@ -120,7 +120,7 @@ project unless it becomes genuinely necessary.
 * `app/users.py`: `get_or_create_current_user` (UID from verified
   claims; existing user synced for email/email_verified with
   collision-safe updates, display_name set only at creation; new user +
-  empty profile in one transaction, role `STUDENT`; UNIQUE-race retry
+   empty profile in one transaction, role `USER`; UNIQUE-race retry
   via rollback + re-query) and `GET /api/v1/users/me` (8-field
   `UserRead` response, no claim leakage). No profile endpoints, no role
   mutation.
@@ -142,6 +142,21 @@ project unless it becomes genuinely necessary.
   (empty profile → PATCH → persisted; bad token → 401); dev database
   left clean.
 
+## Role model correction — `STUDENT` renamed to `USER` (COMPLETE)
+
+* Authorization roles are now `USER` / `OWNER` / `ADMIN` (default
+  `USER`). The role describes platform permissions, not whether the
+  renter is a student; Apun-Ghar serves students and young
+  professionals alike. `OWNER` and `ADMIN` stay controlled
+  server-side; no self-service role mutation exists.
+* Single migration `0005` (down_revision `0004`): moves existing
+  `STUDENT` rows to `USER`, switches the `ck_users_role` CHECK to
+  `USER` / `OWNER` / `ADMIN`, and updates the `role` server default.
+  Downgrade restores `USER` rows to `STUDENT` before restoring the old
+  CHECK. Upgrade → downgrade → upgrade round-trip verified.
+* The profile UI no longer displays the role label; role remains
+  backend authorization data only.
+
 ## Phase 1 plan — Authentication + Profiles (NOT started)
 
 Nothing below is implemented. Firebase is not configured.
@@ -154,7 +169,7 @@ Nothing below is implemented. Firebase is not configured.
 * Firebase ID token handling in Next.js
 * FastAPI verification of Firebase ID tokens (Firebase Admin SDK)
 * User synchronization into PostgreSQL on first verified request
-* Server-side roles (`STUDENT` / `OWNER` / `ADMIN`, default `STUDENT`);
+* Server-side roles (`USER` / `OWNER` / `ADMIN`, default `USER`);
   user profile creation and update
 * Proper logout / session handling
 * Authentication and authorization tests
@@ -169,7 +184,7 @@ create and manage listings.
 
 Phase 1 implements NONE of that: no owner onboarding, no owner
 verification, no listing creation, and no self-service "Become an Owner"
-role-mutation endpoint. New accounts default to `STUDENT`; `OWNER` and
+role-mutation endpoint. New accounts default to `USER`; `OWNER` and
 `ADMIN` stay controlled server-side, with `OWNER` accounts provisioned
 manually/bootstrap for development and testing only.
 
@@ -208,8 +223,8 @@ PostgreSQL user → application session/state.
 ### Database model (planning level)
 
 * `users`: Firebase UID (unique, links identity to application user),
-  application role (`STUDENT` / `OWNER` / `ADMIN`; new users default to
-  `STUDENT`; no role-mutation API in Phase 1), plus basic account fields.
+  application role (`USER` / `OWNER` / `ADMIN`; new users default to
+  `USER`; no role-mutation API in Phase 1), plus basic account fields.
   No password column — passwords must never be stored in PostgreSQL.
 * `user_profiles`: application-specific profile data
   (college/workplace, budget, move-in preferences). Fields stay minimal

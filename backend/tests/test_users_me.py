@@ -120,7 +120,7 @@ def test_first_login_creates_user_and_profile(client, engine):
     assert res.status_code == 200
     body = res.json()
     assert body["firebase_uid"] == UID
-    assert body["role"] == "STUDENT"
+    assert body["role"] == "USER"
     assert body["email"] == "t2c-user-1@example.com"
     assert set(body) == {
         "id",

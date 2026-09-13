@@ -20,7 +20,7 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint(
-            "role IN ('STUDENT', 'OWNER', 'ADMIN')", name="ck_users_role"
+            "role IN ('USER', 'OWNER', 'ADMIN')", name="ck_users_role"
         ),
     )
 
@@ -28,7 +28,7 @@ class User(Base):
     firebase_uid: Mapped[str] = mapped_column(String(128), unique=True)
     email: Mapped[str | None] = mapped_column(String(320), unique=True)
     email_verified: Mapped[bool] = mapped_column(default=False)
-    role: Mapped[str] = mapped_column(String(20), default="STUDENT")
+    role: Mapped[str] = mapped_column(String(20), default="USER")
     display_name: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

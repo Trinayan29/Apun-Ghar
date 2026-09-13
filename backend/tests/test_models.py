@@ -45,13 +45,25 @@ def _user(**kwargs):
     return User(**kwargs)
 
 
-def test_default_role_is_student(db):
+def test_default_role_is_user(db):
     db.add(_user())
     db.flush()
     row = db.query(User).one()
-    assert row.role == "STUDENT"
+    assert row.role == "USER"
     assert row.created_at is not None
     assert row.updated_at is not None
+
+
+def test_user_role_accepted(db):
+    db.add(_user(role="USER"))
+    db.flush()
+    assert db.query(User).one().role == "USER"
+
+
+def test_student_role_rejected(db):
+    db.add(_user(role="STUDENT"))
+    with pytest.raises(IntegrityError):
+        db.flush()
 
 
 def test_invalid_role_rejected(db):

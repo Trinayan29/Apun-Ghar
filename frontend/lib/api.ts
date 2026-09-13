@@ -17,12 +17,14 @@ export class ApiError extends Error {
   }
 }
 
+export type AppRole = "USER" | "OWNER" | "ADMIN";
+
 export interface AppUser {
   id: number;
   firebase_uid: string;
   email: string | null;
   email_verified: boolean;
-  role: string;
+  role: AppRole;
   display_name: string | null;
   created_at: string;
   updated_at: string;

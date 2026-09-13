@@ -161,7 +161,6 @@ export default function ProfilePage() {
       <h1 className="mt-6 text-[24px] font-bold tracking-tight">Your profile</h1>
       <p className="mt-1 text-[14px] text-muted">
         {me?.email ?? firebaseUser?.email ?? "Signed in"}
-        {me ? ` · ${me.role}` : ""}
       </p>
 
       <form onSubmit={save} noValidate className="mt-6 space-y-5">

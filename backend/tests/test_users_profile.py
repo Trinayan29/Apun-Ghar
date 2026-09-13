@@ -380,7 +380,7 @@ def test_patch_cannot_change_role(client, engine):
     assert res.status_code == 422
     db = sessionmaker(bind=engine)()
     try:
-        assert db.query(User).filter(User.firebase_uid == UID).one().role == "STUDENT"
+        assert db.query(User).filter(User.firebase_uid == UID).one().role == "USER"
     finally:
         db.close()
 
@@ -456,7 +456,7 @@ def test_locations_router_has_no_auth_dependency():
             )
 
 
-def test_student_rejected_by_owner_route(role_client):
+def test_user_rejected_by_owner_route(role_client):
     res = authed_probe(role_client).get("/owner-only")
     assert res.status_code == 403
 
