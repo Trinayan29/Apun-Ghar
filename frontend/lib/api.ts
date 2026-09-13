@@ -28,9 +28,18 @@ export interface AppUser {
   updated_at: string;
 }
 
+export interface LocationItem {
+  id: number;
+  type: string;
+  name: string;
+  city: string;
+}
+
 export interface UserProfile {
-  college: string | null;
-  workplace: string | null;
+  college_location_id: number | null;
+  college_location: LocationItem | null;
+  workplace_location_id: number | null;
+  workplace_location: LocationItem | null;
   budget_min: number | null;
   budget_max: number | null;
   move_in_date: string | null;
@@ -39,7 +48,14 @@ export interface UserProfile {
 }
 
 export type ProfilePatch = Partial<
-  Pick<UserProfile, "college" | "workplace" | "budget_min" | "budget_max" | "move_in_date">
+  Pick<
+    UserProfile,
+    | "college_location_id"
+    | "workplace_location_id"
+    | "budget_min"
+    | "budget_max"
+    | "move_in_date"
+  >
 >;
 
 async function authHeaders(): Promise<HeadersInit> {
@@ -84,3 +100,13 @@ export const patchMyProfile = (patch: ProfilePatch) =>
     method: "PATCH",
     body: patch,
   });
+
+export const listLocations = (
+  type: "college" | "workplace",
+  search: string
+): Promise<LocationItem[]> => {
+  const params = new URLSearchParams({ type, limit: "10" });
+  const q = search.trim();
+  if (q) params.set("search", q);
+  return request<LocationItem[]>(`/api/v1/locations?${params.toString()}`);
+};

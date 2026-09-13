@@ -11,6 +11,7 @@ import {
 } from "firebase/auth";
 import { auth, googleProvider } from "@/lib/firebase";
 import { useAuth } from "@/components/AuthProvider";
+import { isOnboardingDone } from "@/lib/onboarding-storage";
 import { friendlyAuthError, isValidEmail } from "@/lib/auth-errors";
 import {
   AuthShell,
@@ -33,7 +34,11 @@ export default function SignupPage() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!authLoading && firebaseUser) router.replace("/");
+    if (!authLoading && firebaseUser) {
+      router.replace(
+        isOnboardingDone(firebaseUser.uid) ? "/" : "/onboarding"
+      );
+    }
   }, [authLoading, firebaseUser, router]);
 
   const clearError = (key: string) =>
@@ -70,7 +75,9 @@ export default function SignupPage() {
         );
         return;
       }
-      router.replace("/");
+      router.replace(
+        isOnboardingDone(cred.user.uid) ? "/" : "/onboarding"
+      );
     } catch (err) {
       setFormError(friendlyAuthError(err));
     } finally {
@@ -83,8 +90,10 @@ export default function SignupPage() {
     setFormError("");
     setSubmitting(true);
     try {
-      await signInWithPopup(auth, googleProvider);
-      router.replace("/");
+      const cred = await signInWithPopup(auth, googleProvider);
+      router.replace(
+        isOnboardingDone(cred.user.uid) ? "/" : "/onboarding"
+      );
     } catch (err) {
       setFormError(friendlyAuthError(err));
     } finally {

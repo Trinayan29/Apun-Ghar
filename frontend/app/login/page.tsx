@@ -9,6 +9,7 @@ import {
 } from "firebase/auth";
 import { auth, googleProvider } from "@/lib/firebase";
 import { useAuth } from "@/components/AuthProvider";
+import { isOnboardingDone } from "@/lib/onboarding-storage";
 import { friendlyAuthError, isValidEmail } from "@/lib/auth-errors";
 import {
   AuthShell,
@@ -29,7 +30,14 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!authLoading && firebaseUser) router.replace("/");
+    if (!authLoading && firebaseUser) {
+      // Authenticated users who haven't finished onboarding are directed
+      // to onboarding; completed users land on `/`. `/profile` stays
+      // reachable directly either way, and `/` never bounces back here.
+      router.replace(
+        isOnboardingDone(firebaseUser.uid) ? "/" : "/onboarding"
+      );
+    }
   }, [authLoading, firebaseUser, router]);
 
   const validate = (): boolean => {
@@ -46,8 +54,10 @@ export default function LoginPage() {
     if (!validate() || submitting) return;
     setSubmitting(true);
     try {
-      await signInWithEmailAndPassword(auth, email.trim(), password);
-      router.replace("/");
+      const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
+      router.replace(
+        isOnboardingDone(cred.user.uid) ? "/" : "/onboarding"
+      );
     } catch (err) {
       setFormError(friendlyAuthError(err));
     } finally {
@@ -60,8 +70,10 @@ export default function LoginPage() {
     setFormError("");
     setSubmitting(true);
     try {
-      await signInWithPopup(auth, googleProvider);
-      router.replace("/");
+      const cred = await signInWithPopup(auth, googleProvider);
+      router.replace(
+        isOnboardingDone(cred.user.uid) ? "/" : "/onboarding"
+      );
     } catch (err) {
       setFormError(friendlyAuthError(err));
     } finally {
