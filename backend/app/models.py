@@ -1,6 +1,6 @@
 from datetime import date
 
-from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, String, func
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, Index, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -8,6 +8,7 @@ from .db import Base
 
 class Location(Base):
     __tablename__ = "locations"
+    __table_args__ = (Index("ix_locations_type_name", "type", "name"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     type: Mapped[str] = mapped_column(String(20))
