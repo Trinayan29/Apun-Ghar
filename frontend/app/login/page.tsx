@@ -16,6 +16,7 @@ import {
   Field,
   FormError,
   GoogleButton,
+  OwnerEntryLink,
   SubmitButton,
   TextField,
 } from "@/components/auth-ui";
@@ -146,6 +147,7 @@ export default function LoginPage() {
       <div className="mt-3">
         <GoogleButton onClick={google} disabled={submitting} label="Continue with Google" />
       </div>
+      <OwnerEntryLink />
     </AuthShell>
   );
 }

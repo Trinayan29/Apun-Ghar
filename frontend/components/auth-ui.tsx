@@ -170,6 +170,18 @@ export function GoogleButton({
   );
 }
 
+/** Secondary owner entry point for auth pages. Entry only — never role assignment. */
+export function OwnerEntryLink() {
+  return (
+    <p className="mt-6 text-center text-[13.5px] text-muted">
+      Own a property?{" "}
+      <Link href="/list-your-property" className="font-bold text-brand-700 underline underline-offset-2">
+        List it on Apun-Ghar →
+      </Link>
+    </p>
+  );
+}
+
 export function FormError({ message }: { message: string }) {
   return (
     <p
