@@ -129,11 +129,19 @@ def test_first_login_creates_user_and_profile(client, engine):
         "email_verified",
         "role",
         "display_name",
+        "phone_number",
         "created_at",
         "updated_at",
     }
     assert user_count(engine, UID) == 1
     assert profile_count(engine, UID) == 1
+
+
+def test_provisioned_user_phone_defaults_null(client, engine):
+    res = authed(client).get("/api/v1/users/me")
+    assert res.status_code == 200
+    assert res.json()["phone_number"] is None
+    assert fetch(engine, UID)["role"] == "USER"
 
 
 def test_repeat_login_reuses_user(client, engine):

@@ -110,6 +110,26 @@ def test_budget_max_below_min_rejected(db):
         db.flush()
 
 
+def test_phone_number_nullable_default(db):
+    db.add(_user())
+    db.flush()
+    row = db.query(User).one()
+    assert row.phone_number is None
+
+
+def test_phone_number_not_unique(db):
+    db.add(_user(firebase_uid="p1", phone_number="+911234567890"))
+    db.add(_user(firebase_uid="p2", phone_number="+911234567890"))
+    db.flush()
+    assert db.query(User).count() == 2
+
+
+def test_phone_number_stores_value(db):
+    db.add(_user(phone_number="+919876543210"))
+    db.flush()
+    assert db.query(User).one().phone_number == "+919876543210"
+
+
 def test_empty_profile_is_valid(db):
     db.add(_user())
     db.flush()

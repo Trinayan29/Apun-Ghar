@@ -385,6 +385,15 @@ def test_patch_cannot_change_role(client, engine):
         db.close()
 
 
+def test_patch_cannot_set_phone_number(client, engine):
+    c = authed(client)
+    c.get("/api/v1/users/me")
+    res = c.patch(
+        "/api/v1/users/me/profile", json={"phone_number": "+911234567890"}
+    )
+    assert res.status_code == 422
+
+
 def test_patch_cannot_change_identity_fields(client, engine):
     c = authed(client)
     c.get("/api/v1/users/me")

@@ -21,6 +21,7 @@ class UserRead(BaseModel):
     email_verified: bool
     role: str
     display_name: str | None
+    phone_number: str | None
     created_at: datetime
     updated_at: datetime
 

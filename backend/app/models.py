@@ -30,6 +30,7 @@ class User(Base):
     email_verified: Mapped[bool] = mapped_column(default=False)
     role: Mapped[str] = mapped_column(String(20), default="USER")
     display_name: Mapped[str | None] = mapped_column(String(200))
+    phone_number: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
