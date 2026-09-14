@@ -109,6 +109,56 @@ def get_or_create_current_user(db: Session, claims: dict) -> User:
     return user
 
 
+OWNER_ROLE = "OWNER"
+
+
+def get_or_create_owner(
+    db: Session, claims: dict, display_name: str, phone_number: str
+) -> tuple[User, bool]:
+    uid = claims.get("uid")
+    if not uid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Firebase ID token",
+        )
+    user = db.query(User).filter(User.firebase_uid == uid).first()
+    if user is not None:
+        if user.role != OWNER_ROLE:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="ACCOUNT_TYPE_CONFLICT",
+            )
+        _apply_identity_sync(db, user, claims)
+        db.commit()
+        db.refresh(user)
+        return user, False
+    email = claims.get("email")
+    if email and _email_taken_by_other(db, email, uid):
+        email = None
+    user = User(
+        firebase_uid=uid,
+        email=email,
+        email_verified=bool(claims.get("email_verified", False)),
+        display_name=display_name,
+        phone_number=phone_number,
+        role=OWNER_ROLE,
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        user = db.query(User).filter(User.firebase_uid == uid).one()
+        if user.role != OWNER_ROLE:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="ACCOUNT_TYPE_CONFLICT",
+            )
+        return user, False
+    db.refresh(user)
+    return user, True
+
+
 def get_current_user(
     db: Session = Depends(get_db),
     claims: dict = Depends(get_firebase_claims),
