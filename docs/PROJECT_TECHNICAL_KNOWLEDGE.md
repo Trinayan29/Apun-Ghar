@@ -2,7 +2,7 @@
 
 > **Audience**: Joining developers, technical mentors, evaluators, hackathon judges, and architecture reviewers.  
 > **Status**: Authoritative documentation of the actual codebase as implemented.  
-> **Repository State Verified**: Phase 0 (Foundation) & Phase 1 (Auth, User Profiles, Canonical Locations, Frontend Auth/Onboarding) Complete. 80/80 backend tests passing; frontend TypeScript typecheck and static build passing.
+> **Repository State Verified**: Phase 0 (Foundation), Phase 1 (Auth, User Profiles, Canonical Locations, Frontend Auth/Onboarding), Phase 3B (Renter Experience) & Phase 4A (Property-Lister Account) Complete. 125/125 backend tests passing; frontend TypeScript typecheck and static build passing.
 
 ---
 
@@ -340,7 +340,7 @@ CONSTRAINT ck_users_role CHECK (role IN ('USER', 'OWNER', 'ADMIN'))
 In earlier exploratory iterations of the project, this role was named `STUDENT`. However, an architectural review proved this design flawed:
 - **`USER` does NOT mean "student only"**.
 - A `USER` is **any tenant or consumer** on the platform. This encompasses undergraduate students, postgraduate scholars, interns, young corporate professionals, government employees, and prospective roommates looking for accommodations.
-- **`OWNER`** represents a verified property manager, landlord, PG operator, or hostel warden who has been approved to publish and manage listings.
+- **`OWNER`** represents a self-registered property lister (landlord, PG operator, hostel warden) with a separate owner account, Owner Studio dashboard, and no renter profile. No approval step exists: the owner creates the account directly via `POST /api/v1/owners/signup`, which assigns the role server-side.
 - **`ADMIN`** represents an Apun-Ghar internal platform administrator with full governance, verification, and moderation privileges.
 
 ### Role Lifecycle and Governance
@@ -349,10 +349,10 @@ In earlier exploratory iterations of the project, this role was named `STUDENT`.
    - There is **no public API endpoint** allowing a user to change their own role.
    - The profile update schema (`ProfileUpdate`) uses Pydantic's `extra="forbid"` configuration. Attempting to pass `role: "OWNER"` in a profile payload immediately fails with an HTTP 422 Unprocessable Entity error.
    - Even if the frontend UI were manipulated, the database role remains untouched.
-3. **Owner Approval Workflow (Future Architecture)**:
-   - In future phases, an existing `USER` will submit an owner onboarding application (proof of property ownership or management authority).
-   - An `ADMIN` reviews the submission.
-   - Only the administrative pipeline or direct database administration can promote an account from `USER` to `OWNER`.
+3. **No Role Promotion Exists**:
+    - There is **no public API endpoint** allowing a user to change their own role, and no `USER` → `OWNER` promotion flow of any kind.
+    - A `USER` never becomes an `OWNER`: owner accounts are created directly as `OWNER` through `POST /api/v1/owners/signup` (see §13). An existing `USER` or `ADMIN` calling that endpoint receives HTTP 409 `ACCOUNT_TYPE_CONFLICT` and is never mutated.
+    - There is no admin-approval, KYC, ownership-document, SMS OTP, or phone-verification requirement for lister accounts in the current product.
 4. **Backend Enforcement**:
    - Protected routes declare role requirements using FastAPI's dependency injection:
      ```python
@@ -430,7 +430,9 @@ Represents an authenticated account within the Apun-Ghar application domain.
 - **`email_verified`** (`BOOLEAN`, NOT NULL, Server Default `false`): Tracks whether the email has been confirmed.
 - **`role`** (`VARCHAR(20)`, NOT NULL, Server Default `'USER'`): Platform authorization level. Constrained by `ck_users_role` to `'USER'`, `'OWNER'`, or `'ADMIN'`.
 - **`display_name`** (`VARCHAR(200)`, Nullable): User's preferred full name.
+- **`phone_number`** (`VARCHAR(32)`, Nullable): Contact phone number, populated for `OWNER` accounts via owner signup (validated `^\+?[0-9]{7,15}$`). Stored as contact data only — never used for SMS authentication.
 - **`created_at`** / **`updated_at`** (`TIMESTAMPTZ`, NOT NULL): Audit timestamps automatically set and updated by PostgreSQL `now()`.
+- **No profile for owners**: `OWNER` accounts never receive a `user_profiles` row; renter profile endpoints reject them with 403.
 
 #### 2. Table: `user_profiles`
 Stores domain-specific preferences and search anchors for the renter.
@@ -552,16 +554,19 @@ All endpoints follow REST principles with standard JSON request and response bod
 | **GET** | `/healthz` | No | Liveness probe (container orchestrators) | None | `{"status": "ok"}` (200 OK) | *None* |
 | **GET** | `/readyz` | No | Readiness probe (tests PostgreSQL connectivity) | None | `{"status": "ready", "db": "up"}` (200 OK) | 500 (Database unreachable) |
 | **GET** | `/api/v1/locations` | No | Search and filter canonical colleges, workplaces, areas | None (Query params: `type`, `search`, `limit`) | Array of `LocationRead` objects (200 OK) | 422 Unprocessable Content (invalid `type` or `limit`) |
-| **GET** | `/api/v1/users/me` | **Yes** (Bearer) | Get authenticated user account details | None | `UserRead` (id, firebase_uid, email, email_verified, role, display_name, timestamps) (200 OK) | 401 Unauthorized |
-| **GET** | `/api/v1/users/me/profile` | **Yes** (Bearer) | Get current user's profile and nested location objects | None | `ProfileRead` (nested `college_location`, `workplace_location`, budgets, move-in) (200 OK) | 401 Unauthorized |
-| **PATCH** | `/api/v1/users/me/profile` | **Yes** (Bearer) | Partially update own profile preferences | `ProfileUpdate` (JSON with optional fields to change/clear) | Updated `ProfileRead` (200 OK) | 401 Unauthorized, 422 Unprocessable Content |
+| **GET** | `/api/v1/users/me` | **Yes** (Bearer) | Get authenticated user account details | None | `UserRead` (id, firebase_uid, email, email_verified, role, display_name, phone_number, timestamps) (200 OK) | 401 Unauthorized |
+| **GET** | `/api/v1/users/me/profile` | **Yes** (Bearer, `USER` only) | Get current renter's profile and nested location objects | None | `ProfileRead` (nested `college_location`, `workplace_location`, budgets, move-in) (200 OK) | 401 Unauthorized, 403 for `OWNER`/`ADMIN` |
+| **PATCH** | `/api/v1/users/me/profile` | **Yes** (Bearer, `USER` only) | Partially update own profile preferences | `ProfileUpdate` (JSON with optional fields to change/clear) | Updated `ProfileRead` (200 OK) | 401 Unauthorized, 403 for `OWNER`/`ADMIN`, 422 Unprocessable Content |
+| **POST** | `/api/v1/owners/signup` | **Yes** (Bearer) | Provision the caller as `OWNER`: new Firebase identity → 201 `OWNER` (no `UserProfile` row); existing `OWNER` → idempotent 200; existing `USER`/`ADMIN` → 409, never mutated | `OwnerSignupIn`: `display_name` (2–200 chars), `phone_number` (`^\+?[0-9]{7,15}$`); strict `extra="forbid"` | `UserRead` with `role: "OWNER"` (201 created / 200 existing) | 401 Unauthorized, 409 `ACCOUNT_TYPE_CONFLICT`, 422 Unprocessable Content |
+
+There is intentionally NO `/owners/me`, NO `/users/me/role`, NO `USER` → `OWNER` promotion endpoint, and NO owner approval endpoint.
 
 ### HTTP Status Code Conventions
 - **200 OK**: Request succeeded and data is returned.
 - **401 Unauthorized**: Missing, malformed, invalid, or expired Firebase Bearer token in the `Authorization` header.
 - **403 Forbidden**: Token is valid, but the user account lacks the required role permissions (e.g. non-owner accessing an owner route).
 - **404 Not Found**: Resource does not exist.
-- **409 Conflict**: Database uniqueness constraint collision.
+- **409 Conflict**: `ACCOUNT_TYPE_CONFLICT` when a non-`OWNER` identity calls owner signup (never mutated); otherwise database uniqueness constraint collision.
 - **422 Unprocessable Content**: Request syntax is valid JSON, but fails schema validation (e.g. negative budget, `budget_min > budget_max`, referencing a workplace ID in `college_location_id`, or supplying forbidden extra fields).
 - **500 Internal Server Error**: Unexpected unhandled server or database error.
 
@@ -575,7 +580,7 @@ The backend application is organized cleanly under `backend/app/`:
 backend/
 ├── alembic/                      # Alembic schema migration environment
 │   ├── env.py                   # Connects SQLAlchemy models to migration context
-│   └── versions/                # Ordered, append-only migration scripts (0001 - 0005)
+│   └── versions/                # Ordered, append-only migration scripts (0001 - 0006)
 ├── alembic.ini                  # Alembic configuration
 ├── requirements.txt             # Locked Python backend dependencies
 ├── app/
@@ -583,17 +588,18 @@ backend/
 │   ├── main.py                  # Application entry point, CORS, routers, healthz
 │   ├── db.py                    # Database engine, SessionLocal factory, get_db dependency
 │   ├── models.py                # SQLAlchemy declarative ORM models (User, UserProfile, Location)
-│   ├── auth.py                  # Firebase token verification, get_current_user, require_role
+│   ├── auth.py                  # Firebase token verification, get_current_user, require_role, owner provisioning helpers
 │   ├── users.py                 # User & Profile schemas and route endpoints
+│   ├── owners.py                # OwnerSignupIn schema + POST /api/v1/owners/signup (server-side OWNER assignment, 409 conflict, idempotent repeat)
 │   ├── locations.py             # Location schemas, query validation, and search endpoint
 │   └── seed.py                  # Idempotent database seeder for canonical institutions
-└── tests/                       # Pytest test suite (80 passing tests)
+└── tests/                       # Pytest test suite (125 passing tests)
 ```
 
 ### Module Responsibilities
 
 - **`app/main.py`**:
-  Initializes the `FastAPI` application instance. Mounts `CORSMiddleware` configured strictly for `http://localhost:3000` with `allow_credentials=True`, `allow_methods=["GET", "PATCH"]`, and `allow_headers=["Authorization", "Content-Type"]`. Registers `/healthz`, `/readyz`, and includes `users_router` and `locations_router`.
+  Initializes the `FastAPI` application instance. Mounts `CORSMiddleware` configured strictly for `http://localhost:3000` with `allow_credentials=True`, `allow_methods=["GET", "POST", "PATCH"]`, and `allow_headers=["Authorization", "Content-Type"]`. Registers `/healthz`, `/readyz`, and includes `users_router`, `owners_router`, and `locations_router`.
 - **`app/db.py`**:
   Initializes the SQLAlchemy database engine using `create_engine` with connection health checks (`pool_pre_ping=True`). Configures `SessionLocal` (`autoflush=False, expire_on_commit=False`). Exposes the `get_db` generator function for dependency injection.
 - **`app/models.py`**:
@@ -602,6 +608,7 @@ backend/
   Manages Firebase Admin SDK initialization. Implements:
   - `get_firebase_claims`: Extracts the HTTP Bearer token and verifies it via `firebase_auth.verify_id_token`.
   - `get_or_create_current_user`: Takes claims, resolves or inserts the PostgreSQL user and profile atomically, and handles unique email collision recovery.
+  - `get_or_create_owner`: Takes claims plus owner `display_name`/`phone_number`; creates an `OWNER` row with NO `UserProfile`, returns idempotent success for an existing `OWNER`, and raises 409 `ACCOUNT_TYPE_CONFLICT` (never mutating) for an existing `USER`/`ADMIN`.
   - `get_current_user`: FastAPI dependency chaining claims verification and user retrieval.
   - `require_role(*allowed)`: Reusable role-gating dependency factory.
 - **`app/users.py`**:
@@ -625,14 +632,20 @@ frontend/
 │   ├── page.tsx                 # Root page: dynamic welcome / home dashboard
 │   ├── login/page.tsx           # Email/password & Google login
 │   ├── signup/page.tsx          # Account creation page
-│   ├── onboarding/page.tsx      # 3-step progressive onboarding journey
-│   ├── profile/page.tsx         # Self-service profile viewing and editing
-│   └── list-your-property/      # Owner intro & coming-soon landing page
+│   ├── onboarding/page.tsx      # 3-step progressive onboarding journey (renter-only)
+│   ├── profile/page.tsx         # Self-service renter profile viewing and editing
+│   ├── list-your-property/      # Owner entry page with real signup/login CTAs
+│   └── owner/
+│       ├── signup/page.tsx      # Owner email/Google signup + mandatory phone, first-touch ownerSignup ordering
+│       ├── login/page.tsx       # Owner sign-in with getMe() role check + account-type conflict
+│       ├── dashboard/page.tsx   # Owner Studio: real identity, honest empty/coming-soon states
+│       └── account/page.tsx     # Real owner identity from /users/me + sign out
 ├── components/
 │   ├── AuthProvider.tsx         # React Context broadcasting Firebase user & tokens
 │   ├── auth-ui.tsx              # Reusable form elements, buttons, errors, auth shell
 │   ├── brand.tsx                # Brand mark icon and logo typography
-│   └── location-search.tsx      # Debounced canonical location search input
+│   ├── location-search.tsx      # Debounced canonical location search input
+│   └── owner-ui.tsx             # Owner-only components (auth shell, conflict notice, dashboard atoms)
 └── lib/
     ├── firebase.ts              # Firebase Client SDK & Emulator initialization
     ├── api.ts                   # Typed API client, ApiError class, DTO interfaces
@@ -650,7 +663,8 @@ The application wraps all routes inside an `AuthProvider` React Context:
 A clean, centralized fetch wrapper:
 - Automatically invokes `auth.currentUser.getIdToken()` to attach `Authorization: Bearer <token>` to outgoing requests.
 - Parses API errors and throws structured `ApiError` instances containing the HTTP status code and server detail message.
-- Provides type-safe functions: `getMe()`, `getMyProfile()`, `patchMyProfile(patch)`, and `listLocations(type, search)`.
+- Provides type-safe functions: `getMe()`, `getMyProfile()`, `patchMyProfile(patch)`, `listLocations(type, search)`, `ownerSignup({display_name, phone_number})`, plus `ACCOUNT_TYPE_CONFLICT` / `isAccountTypeConflict()` for dedicated 409 handling.
+- Ordering invariant (owner signup): a fresh Firebase identity must reach `POST /api/v1/owners/signup` before ANY `getMe()`, because `/users/me` auto-provisions unknown identities as `USER`. The owner signup page enforces this with an explicit in-flight suppression guard; the owner login page intentionally uses `getMe()` AFTER authentication (existing-account role check).
 
 ### Location Search Component (`location-search.tsx`)
 A shared, debounced autocomplete component:
@@ -662,7 +676,13 @@ A shared, debounced autocomplete component:
 
 ## 12. Onboarding Flow
 
-When a new user registers or signs in for the first time, they are directed through a progressive **3-step onboarding flow** (`/onboarding`):
+Onboarding is **renter-only**. `OWNER` accounts never enter it: the
+renter auth/onboarding/profile routes redirect an authenticated `OWNER`
+to Owner Studio, and `onboarding-storage.ts` (the per-UID
+`ag-onboarding-done:<uid>` `localStorage` flag) is never read or
+written by owner flows.
+
+When a new renter registers or signs in for the first time, they are directed through a progressive **3-step onboarding flow** (`/onboarding`):
 
 ```text
 Step 1: College ──────> Step 2: Workplace ──────> Step 3: Budget & Move-in ──────> Dashboard (/)
@@ -699,42 +719,62 @@ Step 1: College ──────> Step 2: Workplace ──────> Step 3
 
 ## 13. Owner Experience
 
-### What Is ACTUALLY Implemented Today
-The repository currently contains an **Owner Entry and Intro Experience**:
-- A secondary navigation link across Home and Auth pages: *"Own a property? List it on Apun-Ghar →"*.
-- A dedicated route at `/list-your-property`.
-- Clear value proposition messaging tailored for property managers (PGs, rooms, flats, student hostels).
-- A primary CTA button ("Get started") that intentionally reveals a transparent status banner:
-  > *"Owner listing setup is coming soon. There's no listing flow to complete yet — we'll open owner onboarding here once it's ready. Nothing has been created and your account role is unchanged."*
-- **Crucial Security Reality**: Visiting or interacting with `/list-your-property` **grants no permissions, makes no database mutations, and leaves the user's role as `USER`**. There is currently NO listing creation UI, NO owner dashboard, and NO property management API.
+### What Is ACTUALLY Implemented Today (Phase 4A COMPLETE)
+Property listers are a separate account type with a separate product
+experience (Owner Studio), sharing the same Firebase project:
+
+- **Entry**: `/list-your-property` links to real owner signup/login
+  (primary CTA → `/owner/signup`, owner login → `/owner/login`,
+  renter alternative kept). It grants nothing by itself and makes no
+  verification/traction claims.
+- **Owner signup** (`/owner/signup`): email/password (Firebase account
+  → display name → `POST /api/v1/owners/signup` → dashboard) and
+  Google (popup → mandatory name/phone completion → `ownerSignup` →
+  dashboard). Phone is mandatory and schema-validated. A fresh Firebase
+  identity always reaches owner signup before any `/users/me` call
+  (explicit in-flight guard; `/users/me` would otherwise auto-provision
+  it as `USER`).
+- **Owner login** (`/owner/login`): Firebase auth → `getMe()` role
+  check → `OWNER` to dashboard; `USER`/`ADMIN` get a dedicated
+  account-type conflict screen (session kept alive, no conversion).
+  Real Firebase password reset is wired for owners.
+- **Owner dashboard** (`/owner/dashboard`, Owner Studio): requires
+  auth, resolves identity via `/users/me`, renders only for `OWNER`,
+  shows the real name/email/phone, and uses honest empty/coming-soon
+  states — no fake listings, enquiries, views, or revenue.
+- **Owner account** (`/owner/account`): real identity rows plus
+  Firebase sign-out. Never touches renter profile endpoints or
+  onboarding storage.
+- **Separation enforced both ways**: renter profile APIs
+  (`require_role("USER")`) reject `OWNER` with 403; authenticated
+  `OWNER` on renter auth/onboarding/profile routes is redirected to
+  Owner Studio.
+- **Crucial product reality**: there is intentionally NO admin
+  approval, KYC, ownership-document, SMS OTP, or phone-verification
+  requirement for lister accounts. Phone numbers are contact data, not
+  authentication factors. Property creation/listing functionality does
+  NOT exist yet — that is Phase 2.
 
 ### Intended Future Architecture (Phase 2 Roadmap)
 
 ```text
 +-----------------------------------------------------------------------------------+
 |                        INTENDED FUTURE OWNER ARCHITECTURE                         |
-|                                                                                   |
-|   1. Registered USER visits /list-your-property                                   |
+|  Owner accounts already exist (Phase 4A). What remains is the listing product:   |
+|   1. Owner opens Owner Studio (/owner/dashboard)                                 |
 |                          │                                                        |
 |                          ▼                                                        |
-|   2. Submits Owner Application (Property details, address, caretaker KYC)        |
+|   2. Add Property workflow (details, photos, rent, availability) — NOT BUILT     |
 |                          │                                                        |
 |                          ▼                                                        |
-|   3. Application stored in pending state (role remains 'USER')                    |
+|   3. Publish listing; renters discover it via search — NOT BUILT                  |
 |                          │                                                        |
 |                          ▼                                                        |
-|   4. ADMIN reviews documentation via internal admin console                       |
-|                          │                                                        |
-|                          ▼                                                        |
-|   5. On approval: Database updates user.role = 'OWNER'                            |
-|                          │                                                        |
-|                          ▼                                                        |
-|   6. User unlocks access to Owner Dashboard (/owner/dashboard)                    |
-|                          │                                                        |
-|                          ▼                                                        |
-|   7. Owner can create, edit, activate, and manage property listings               |
+|   4. Enquiries and visit scheduling per property — NOT BUILT                      |
 +-----------------------------------------------------------------------------------+
 ```
+Trust/verification workflows (if any) for listings are undecided and
+explicitly NOT requirements today.
 
 ---
 
@@ -829,7 +869,7 @@ RoommatePost [FUTURE / PLANNED]:
    - Profile endpoints operate strictly on `user.id` resolved from the verified token (`/api/v1/users/me/profile`). Users cannot pass arbitrary `user_id` parameters in URLs to access or mutate other users' data.
 5. **CORS Restrictions**:
    - FastAPI's `CORSMiddleware` is configured explicitly for `http://localhost:3000`.
-   - Wildcards (`"*"`) are strictly forbidden. Only `GET` and `PATCH` methods and `Authorization` / `Content-Type` headers are permitted.
+    - Wildcards (`"*"`) are strictly forbidden. Only `GET`, `POST`, and `PATCH` methods and `Authorization` / `Content-Type` headers are permitted.
 6. **SQL Injection & Data Integrity Protection**:
    - SQLAlchemy 2.0 parameterized queries eliminate SQL injection vulnerabilities.
    - Relational Foreign Keys, `CHECK` constraints, and Pydantic DTOs enforce data boundaries at the database and application layer.
@@ -841,7 +881,7 @@ RoommatePost [FUTURE / PLANNED]:
 The following enterprise security features are deliberately deferred to future deployment phases to maintain development velocity:
 - **Rate Limiting**: Protection against API flooding (will be implemented via Cloudflare or Redis token-bucket middleware prior to public release).
 - **Revocation Checking**: Explicit check against Firebase's token revocation endpoint on every request (default 1-hour JWT expiration is currently accepted).
-- **KYC & Government ID Verification**: Required for owners before publishing listings (Phase 2).
+- **KYC & Government ID Verification**: No such requirement exists for lister accounts today, and no verification pipeline is implemented. Whether any trust/verification workflow is ever needed is undecided (deferred, not required).
 - **Production Secret Management**: GCP Secret Manager or AWS Secrets Manager integration.
 
 ---
@@ -865,7 +905,10 @@ Database migrations are strictly version-controlled using Alembic under `backend
 0004_profile_location_fks.py (2026-09-13)
   │
   ▼
-0005_user_role.py (2026-09-13) [HEAD]
+ 0005_user_role.py (2026-09-13)
+   │
+   ▼
+ 0006_add_users_phone_number.py (2026-09-13) [HEAD]
 ```
 
 ### Detailed Migrations Log
@@ -877,6 +920,7 @@ Database migrations are strictly version-controlled using Alembic under `backend
 | **`0003`** | `0003_locations_search.py` | `0002` | **Search Performance**: Creates composite B-Tree index `ix_locations_type_name` on `locations(type, name)` to accelerate location filtering. |
 | **`0004`** | `0004_profile_location_fks.py` | `0003` | **Relational Integrity**: Adds `college_location_id` and `workplace_location_id` integer foreign keys to `user_profiles` referencing `locations.id` (`ON DELETE RESTRICT`). Safely backfills existing data via exact SQL match, drops legacy free-text columns. Downgrade restores columns and names. |
 | **`0005`** | `0005_user_role.py` | `0004` | **Domain Model Correction**: Drops `ck_users_role`, migrates legacy `'STUDENT'` values to `'USER'`, updates default to `'USER'`, and establishes new constraint `role IN ('USER', 'OWNER', 'ADMIN')`. |
+| **`0006`** | `0006_add_users_phone_number.py` | `0005` | **Owner Contact Data**: Adds nullable `users.phone_number` (`VARCHAR(32)`), populated by owner signup. No SMS/auth semantics attached. |
 
 ### Golden Rule: Migrations are Append-Only
 Committed migrations must **never be edited or deleted**. If a schema change is required, a new migration (e.g. `0006_...`) must be generated and applied. Every migration script must include a fully tested, working `downgrade()` function to ensure reversible deployments.
@@ -889,8 +933,8 @@ Quality is verified via comprehensive automated test suites on both backend and 
 
 ### Backend Automated Tests (Pytest)
 The backend test suite is executed using `pytest` inside the virtual environment:
-- **Total Tests**: **80 passed** (0 failures).
-- **Execution Time**: ~8.5 seconds.
+- **Total Tests**: **125 passed** (0 failures).
+- **Execution Time**: ~10 seconds.
 - **Coverage Breakdown**:
   - **`test_auth.py`**: Validates Bearer token parsing, emulator initialization, mock claim handling, and 401 responses on malformed headers.
   - **`test_cors.py`**: Verifies allowed origins (`http://localhost:3000`), methods (`GET`, `PATCH`), and headers.
@@ -899,12 +943,14 @@ The backend test suite is executed using `pytest` inside the virtual environment
   - **`test_models.py`**: Verifies database constraints: role default (`USER`), rejection of `'STUDENT'` and invalid roles, uniqueness of `firebase_uid` and `email`, non-negative budgets, `budget_max >= budget_min`, and `CASCADE` deletion of profiles.
   - **`test_users_me.py`**: Tests provisioning: unauthenticated 401s, user + profile creation on first login, idempotent user re-use on subsequent logins, email sync policies, UID-based identity isolation, email collision handling, and race condition recovery.
   - **`test_users_profile.py`**: Tests profile endpoints: GET own profile, partial PATCH updates, explicit null clearing, 422 errors on non-existent or mismatched location types (e.g. assigning an area to a college), cross-field budget range validation, immutability of roles and identity fields via PATCH, user isolation, and `require_role` permission checks (401 unauthenticated, 403 unauthorized).
+  - **`test_owners_signup.py`**: Tests owner provisioning: 201 creation as `OWNER` with no `UserProfile` row, idempotent repeat for an existing `OWNER`, 409 `ACCOUNT_TYPE_CONFLICT` for existing `USER`/`ADMIN` (never mutated), strict `extra="forbid"` body validation, phone-pattern and display-name 422s, email-collision handling, and race recovery.
 
 ### Frontend Verification
 - **TypeScript Typecheck**:
   `npm run typecheck` (`tsc --noEmit`) completes with **zero errors**.
 - **Static Build**:
-  `npm run build` succeeds cleanly, prerendering all static pages (`/`, `/login`, `/signup`, `/onboarding`, `/profile`, `/list-your-property`).
+  `npm run build` succeeds cleanly, prerendering all static pages (`/`, `/login`, `/signup`, `/onboarding`, `/profile`, `/list-your-property`, `/owner/signup`, `/owner/login`, `/owner/dashboard`, `/owner/account`).
+- **Manual emulator verification (Phase 4A)**: fresh owner signup → 201 `OWNER` without prior `/users/me` provisioning, invalid-data retry without identity poisoning, existing `OWNER` login, `USER` conflict without promotion; temporary test accounts removed from emulator and PostgreSQL afterward.
 
 ---
 
@@ -1001,7 +1047,7 @@ To maintain a production-grade codebase, all contributors adhere to standard bra
 1. **Never Commit Directly to `main`**: All features, bug fixes, and refactors must go through a feature branch.
 2. **Atomic, Descriptive Commits**: Use conventional prefixes (`feat:`, `fix:`, `chore:`, `docs:`, `test:`). Avoid giant, monolithic commits like "updates" or "fixed stuff".
 3. **Run Pre-Commit Verifications**:
-   - Backend: Run `pytest` inside `.venv` (all 80 tests must pass).
+    - Backend: Run `pytest` inside `.venv` (all 125 tests must pass).
    - Frontend: Run `npm run typecheck` and `npm run build`.
 4. **Never Check In Secrets**: Real `.env` files, production service account keys, and credentials must never enter version control.
 
@@ -1058,7 +1104,7 @@ Every item in this checklist has been verified directly against the codebase:
 
 - [x] **Monorepo Foundation**: Clean decoupled structure (`frontend/`, `backend/`, `docs/`).
 - [x] **Containerized Database**: PostgreSQL 17 Alpine configured via `docker-compose.yml` on host port 5433.
-- [x] **Alembic Database Migrations**: Sequential migrations 0001 through 0005 tracking all schema iterations.
+- [x] **Alembic Database Migrations**: Sequential migrations 0001 through 0006 tracking all schema iterations (0006 adds nullable `users.phone_number` for owner contact data).
 - [x] **Firebase Auth Emulator**: Hermetic local auth environment configured via `firebase.json` (ports 9099 & 4000).
 - [x] **Server Token Verification**: FastAPI dependency (`app.auth.get_firebase_claims`) validating Bearer JWTs.
 - [x] **On-Demand User Provisioning**: Automatic, race-condition-safe provisioning of `users` and `user_profiles` in PostgreSQL.
@@ -1078,8 +1124,12 @@ Every item in this checklist has been verified directly against the codebase:
 - [x] **Save-As-You-Go Onboarding**: Immediate step-by-step profile persistence with resume/prefill support.
 - [x] **Autocomplete Location Field**: Debounced search component with stale-request protection and error recovery.
 - [x] **Profile Management UI**: `/profile` page allowing users to view and update preferences anytime.
-- [x] **Owner Entry Landing Page**: `/list-your-property` with dedicated value proposition and coming-soon announcement.
-- [x] **Automated Test Coverage**: 80 automated backend Pytest tests covering models, auth, locations, and profiles.
+- [x] **Owner Entry Landing Page**: `/list-your-property` with real owner signup/login CTAs and honest coming-soon framing for listing tools.
+- [x] **Owner Signup/Login**: `/owner/signup` (email + Google, mandatory validated phone, first-touch `POST /api/v1/owners/signup` ordering with in-flight guard) and `/owner/login` (role check + dedicated account-type conflict, real password reset).
+- [x] **Owner Studio Dashboard**: `/owner/dashboard` with real owner identity and honest empty/coming-soon states (no fake data).
+- [x] **Owner Account Page**: `/owner/account` with real identity rows and Firebase sign-out; no renter profile/onboarding coupling.
+- [x] **Owner Provisioning API**: `POST /api/v1/owners/signup` — server-side `OWNER` assignment, idempotent repeat, 409 conflict without mutation, strict body validation.
+- [x] **Automated Test Coverage**: 125 automated backend Pytest tests covering models, auth, locations, profiles, and owner signup.
 
 ---
 
@@ -1089,8 +1139,8 @@ The following items are **explicitly NOT implemented** in the current codebase:
 
 - [ ] **Property Models & Tables**: No `properties`, `listings`, `photos`, or `amenities` tables exist in the database.
 - [ ] **Owner Listing Creation**: No forms or API endpoints exist for owners to submit or edit listings.
-- [ ] **Owner Verification Pipeline**: No document upload or KYC verification workflows exist.
-- [ ] **Owner Management Dashboard**: No `/owner/dashboard` or property management portal exists.
+- [ ] **Owner Verification Pipeline**: No document upload, KYC, approval, SMS OTP, or phone-verification workflows exist — and none are currently required for lister accounts.
+- [ ] **Owner Property Management Portal**: `/owner/dashboard` exists as an account studio with honest empty states, but no property/listing management functionality exists yet.
 - [ ] **Public Marketplace Search**: No property catalog search, map view, or filter UI exists.
 - [ ] **Listing Detail Pages**: No public property detail routes (`/property/[id]`) exist in the real frontend.
 - [ ] **Saved Listings / Bookmarks**: No capability to save favorite listings to a user account.
@@ -1145,14 +1195,15 @@ Use these structured responses when discussing Apun-Ghar in technical interviews
 
 ### C. 3-Minute Deep Dive
 > "Let me walk you through the technical architecture of Apun-Ghar. The system is intentionally designed as a decoupled modular monolith. On the frontend, we use Next.js 16 with the App Router, React 19, and Tailwind CSS v4. On the backend, we use FastAPI running on Uvicorn, with SQLAlchemy 2.0 and Alembic for migrations.
-> 
+>
 > When designing authentication, we wanted to avoid the security hazards of storing passwords or building custom JWT refresh logic. We chose Firebase Authentication, which handles Email/Password and Google OAuth. In local development, we run the Firebase Auth Emulator on port 9099, so the app runs completely offline with zero cloud costs.
-> 
+>
 > When a client makes a request, it attaches the Firebase ID token in the Authorization header. Our FastAPI dependency extracts and cryptographically verifies the token using the Firebase Admin SDK. Once verified, we execute an on-demand provisioning step: we query our `users` table by `firebase_uid`. If the user doesn't exist, we atomically create the user and an associated `user_profiles` row in a single transaction.
-> 
-> For authorization, we strictly reject frontend role claims. The database stores the authoritative role—`USER`, `OWNER`, or `ADMIN`—enforced by a PostgreSQL CHECK constraint. We renamed our initial 'STUDENT' role to 'USER' via a database migration because our target market includes young corporate professionals and renters of all kinds.
-> 
+>
+> For authorization, we strictly reject frontend role claims. The database stores the authoritative role—`USER`, `OWNER`, or `ADMIN`—enforced by a PostgreSQL CHECK constraint. We renamed our initial 'STUDENT' role to `USER` via a database migration because our target market includes young corporate professionals and renters of all kinds.
+>
 > Another key architectural decision was our location system. Instead of letting users type arbitrary strings for their university or workplace, we introduced a canonical `locations` table. User profiles link to locations via foreign keys with `ON DELETE RESTRICT`. This guarantees data cleanliness for future proximity matching. The entire backend is covered by 80 automated pytest tests, and both TypeScript typechecking and static builds pass cleanly."
+
 
 ### D. "Explain the Architecture"
 > "It's a clean client-server architecture. The Next.js frontend is a static/client-rendered SPA communicating via JSON REST APIs with FastAPI. Identity is externalized to Firebase, while application state lives in PostgreSQL. The backend acts as the single authority: verifying identity tokens, resolving internal integer user IDs, enforcing roles, and executing business logic. We intentionally avoided microservices and caching layers like Redis to keep operational complexity low while maintaining high transactional rigor."
@@ -1173,7 +1224,7 @@ Use these structured responses when discussing Apun-Ghar in technical interviews
 > "The schema is normalized. We separate identity and authentication metadata in `users` from preference data in `user_profiles`, linked via a 1:1 foreign key with `ON DELETE CASCADE`. Profiles reference a canonical `locations` table via foreign keys for college and workplace. We enforce constraints at the database level: budget values cannot be negative, budget max must exceed budget min, and user roles must be one of three allowed strings."
 
 ### J. "Why `USER` / `OWNER` / `ADMIN`?"
-> "In our initial draft, we had a `STUDENT` role. We realized this was a domain modeling mistake: a college student, an intern, and a junior software engineer all consume housing identically. The role shouldn't describe the user's life stage; it should describe their platform permissions. `USER` is a renter/tenant. `OWNER` is an approved property manager who can publish listings. `ADMIN` is an internal moderator. We executed Alembic migration `0005` to migrate existing records and update the check constraint cleanly."
+> "In our initial draft, we had a `STUDENT` role. We realized this was a domain modeling mistake: a college student, an intern, and a junior software engineer all consume housing identically. The role shouldn't describe the user's life stage; it should describe their platform permissions. `USER` is a renter/tenant. `OWNER` is a self-registered property lister with a separate account and dashboard (no approval step, no promotion from `USER`). `ADMIN` is an internal moderator. We executed Alembic migration `0005` to migrate existing records and update the check constraint cleanly."
 
 ### K. "Why Not Microservices?"
 > "Microservices solve organizational scaling problems for companies with hundreds of engineers and distinct domain boundaries. For an early-stage product with a small team, microservices introduce distributed transaction headaches, network latency, complex deployments, and debugging nightmares. A modular monolith provides clean code boundaries inside a single deployable unit, giving us maximum speed with zero operational overhead."
@@ -1221,9 +1272,10 @@ The following end-to-end diagram displays the complete runtime architecture of A
     │
     ├─► Next.js App Router (Port 3000)
     │     ├── Public Routes: / (Welcome), /login, /signup, /list-your-property
-    │     ├── Protected Routes: /onboarding, /profile
-    │     ├── Components: AuthProvider, LocationSearchField, AuthShell
-    │     └── Storage: localStorage ('ag-onboarding-done:<uid>')
+    │     ├── Owner Routes: /owner/signup, /owner/login, /owner/dashboard, /owner/account
+    │     ├── Protected Renter Routes: /onboarding, /profile (OWNER redirected to Owner Studio)
+    │     ├── Components: AuthProvider, LocationSearchField, AuthShell, owner-ui
+    │     └── Storage: localStorage ('ag-onboarding-done:<uid>', renter-only; never touched by owner flows)
     │
     └─► Firebase Client Web SDK
           │
@@ -1246,8 +1298,12 @@ The following end-to-end diagram displays the complete runtime architecture of A
     │
     ├── [MODULE: Users & Profiles] app/users.py
     │     ├── GET   /api/v1/users/me
-    │     ├── GET   /api/v1/users/me/profile
-    │     └── PATCH /api/v1/users/me/profile (Partial updates, validation)
+    │     ├── GET   /api/v1/users/me/profile          (USER only; OWNER → 403)
+    │     └── PATCH /api/v1/users/me/profile          (USER only; OWNER → 403; partial updates, validation)
+    │
+    ├── [MODULE: Owners] app/owners.py
+    │     └── POST  /api/v1/owners/signup              (server-side OWNER assignment; idempotent repeat;
+    │                                                  USER/ADMIN → 409 ACCOUNT_TYPE_CONFLICT, never mutated)
     │
     ├── [MODULE: Locations] app/locations.py
     │     └── GET   /api/v1/locations (Type filter, ILIKE search, limit)
@@ -1259,7 +1315,6 @@ The following end-to-end diagram displays the complete runtime architecture of A
     │  =============================================================================
     │  [FUTURE PLUG-IN MODULES - PHASE 2 & BEYOND]
     │  ├── [FUTURE: Listings & Properties] (app/listings.py) ──> Listings CRUD
-    │  ├── [FUTURE: Owner Application]     (app/owners.py)   ──> KYC & Admin approval
     │  ├── [FUTURE: Marketplace Search]    (app/search.py)   ──> Proximity filter
     │  ├── [FUTURE: Visits & Enquiries]    (app/visits.py)   ──> Schedule property tours
     │  ├── [FUTURE: Roommates]             (app/roommates.py)──> Roommate matching posts
@@ -1270,8 +1325,8 @@ The following end-to-end diagram displays the complete runtime architecture of A
 [PERSISTENCE LAYER]
   PostgreSQL 17 Database (Docker: container 5432 -> host 5433)
     │
-    ├── CURRENT TABLES (Alembic Head: 0005)
-    │     ├── users          (id, firebase_uid, email, role, display_name, timestamps)
+    ├── CURRENT TABLES (Alembic Head: 0006)
+    │     ├── users          (id, firebase_uid, email, role, display_name, phone_number, timestamps)
     │     ├── user_profiles  (user_id, college_loc_id, workplace_loc_id, budgets, move_in)
     │     └── locations      (id, type, name, city) [Index: ix_locations_type_name]
     │

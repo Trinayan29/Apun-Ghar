@@ -17,9 +17,19 @@ See `docs/supply-strategy.md` for the launch supply plan.
 ## Current status
 
 **Phase 0 — Foundation: COMPLETE.**
+**Phase 1 — Authentication + Profiles: COMPLETE** (Firebase
+Email/Password + Google, server-verified tokens, PostgreSQL
+provisioning, `USER`/`OWNER`/`ADMIN` roles, renter profiles).
+**Phase 3B — Renter Experience: COMPLETE** (welcome/entry,
+signup/login, location-backed onboarding, profile).
+**Phase 4A — Property-Lister Account: COMPLETE** (separate `OWNER`
+accounts with dedicated signup/login, Owner Studio dashboard, and
+account page sharing the same Firebase project; no approval/KYC/SMS
+requirements; property listing functionality not yet built).
 
-Phase 1 (Authentication + Profiles) has **NOT** started. No product features
-exist yet — only the runnable foundation described below.
+Phase 2 (marketplace: properties, listings, search) has NOT started.
+No product listing features exist yet beyond the account foundation
+described above.
 
 Details: `docs/PROJECT_STATUS.md`.
 Contributing: `docs/CONTRIBUTING.md`.
@@ -323,9 +333,15 @@ Branch and commit conventions: see `docs/CONTRIBUTING.md`.
 Work lands incrementally, one phase at a time:
 
 * Phase 0 — Foundation — **COMPLETE**
-* Phase 1 — Authentication + Profiles — NEXT (Firebase Email/Password +
+* Phase 1 — Authentication + Profiles — **COMPLETE** (Firebase Email/Password +
   Google Sign-In, FastAPI token verification, PostgreSQL users/roles/
   profiles; full scope in `docs/PROJECT_STATUS.md`, Phone OTP deferred)
+* Phase 3B — Renter Experience — **COMPLETE** (welcome/entry, signup/login,
+  location-backed onboarding, profile)
+* Phase 4A — Property-Lister Account — **COMPLETE** (separate `OWNER`
+  accounts, owner signup/login, Owner Studio dashboard/account; no
+  approval, KYC, or SMS requirements; listings not yet built)
+* Phase 2 — Listings
 * Phase 2 — Listings
 * Phase 3 — Search + Filters
 * Phase 4 — Property Details + Favorites + Compare

@@ -53,7 +53,13 @@ export default function ProfilePage() {
     setLoading(true);
     setLoadError("");
     try {
-      const [u, p] = await Promise.all([getMe(), getMyProfile()]);
+      const u = await getMe();
+      // OWNER has no renter UserProfile — Owner Studio instead.
+      if (u.role === "OWNER") {
+        router.replace("/owner/dashboard");
+        return;
+      }
+      const p = await getMyProfile();
       setMe(u);
       setProfile(p);
       setCollege(p.college_location);
@@ -68,7 +74,7 @@ export default function ProfilePage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     if (!authLoading && firebaseUser) void load();

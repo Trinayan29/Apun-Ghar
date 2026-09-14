@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import {
   ApiError,
+  getMe,
   getMyProfile,
   patchMyProfile,
   type LocationItem,
@@ -77,6 +78,7 @@ export default function OnboardingPage() {
   const prefilled = useRef(false);
 
   // Routing safety: unauthenticated -> /login; already-done -> / (one way).
+  // OWNER accounts never run renter onboarding -> /owner/dashboard.
   // `/` itself never auto-redirects, so this cannot loop.
   useEffect(() => {
     if (authLoading) return;
@@ -88,7 +90,23 @@ export default function OnboardingPage() {
       router.replace("/");
       return;
     }
-    setReady(true);
+    let cancelled = false;
+    (async () => {
+      try {
+        const me = await getMe();
+        if (cancelled) return;
+        if (me.role === "OWNER") {
+          router.replace("/owner/dashboard");
+          return;
+        }
+      } catch {
+        // Non-OWNER roles and network hiccups keep the renter flow.
+      }
+      if (!cancelled) setReady(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [authLoading, firebaseUser, router]);
 
   // Resume: prefill once from the server profile. Read-only — no PATCH is

@@ -10,6 +10,7 @@ import {
 import { auth, googleProvider } from "@/lib/firebase";
 import { useAuth } from "@/components/AuthProvider";
 import { isOnboardingDone } from "@/lib/onboarding-storage";
+import { getMe } from "@/lib/api";
 import { friendlyAuthError, isValidEmail } from "@/lib/auth-errors";
 import {
   AuthShell,
@@ -31,15 +32,44 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!authLoading && firebaseUser) {
-      // Authenticated users who haven't finished onboarding are directed
-      // to onboarding; completed users land on `/`. `/profile` stays
-      // reachable directly either way, and `/` never bounces back here.
-      router.replace(
-        isOnboardingDone(firebaseUser.uid) ? "/" : "/onboarding"
-      );
-    }
+    if (authLoading || !firebaseUser) return;
+    // OWNER accounts live in Owner Studio — never renter onboarding.
+    // Only an exact OWNER role redirects; USER/ADMIN keep renter behavior.
+    let cancelled = false;
+    (async () => {
+      try {
+        const me = await getMe();
+        if (cancelled) return;
+        if (me.role === "OWNER") {
+          router.replace("/owner/dashboard");
+          return;
+        }
+      } catch {
+        // Fall through to renter routing on network/401 hiccups.
+      }
+      if (!cancelled) {
+        router.replace(
+          isOnboardingDone(firebaseUser.uid) ? "/" : "/onboarding"
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [authLoading, firebaseUser, router]);
+
+  const routeAuthenticated = async (uid: string) => {
+    try {
+      const me = await getMe();
+      if (me.role === "OWNER") {
+        router.replace("/owner/dashboard");
+        return;
+      }
+    } catch {
+      // Fall through to renter routing.
+    }
+    router.replace(isOnboardingDone(uid) ? "/" : "/onboarding");
+  };
 
   const validate = (): boolean => {
     const errors: Record<string, string> = {};
@@ -56,9 +86,7 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       const cred = await signInWithEmailAndPassword(auth, email.trim(), password);
-      router.replace(
-        isOnboardingDone(cred.user.uid) ? "/" : "/onboarding"
-      );
+      await routeAuthenticated(cred.user.uid);
     } catch (err) {
       setFormError(friendlyAuthError(err));
     } finally {
@@ -72,9 +100,7 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       const cred = await signInWithPopup(auth, googleProvider);
-      router.replace(
-        isOnboardingDone(cred.user.uid) ? "/" : "/onboarding"
-      );
+      await routeAuthenticated(cred.user.uid);
     } catch (err) {
       setFormError(friendlyAuthError(err));
     } finally {

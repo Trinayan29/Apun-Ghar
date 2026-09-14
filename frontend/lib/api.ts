@@ -26,6 +26,7 @@ export interface AppUser {
   email_verified: boolean;
   role: AppRole;
   display_name: string | null;
+  phone_number: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -93,6 +94,34 @@ async function request<T>(
 }
 
 export const getMe = () => request<AppUser>("/api/v1/users/me");
+
+export interface OwnerSignupPayload {
+  display_name: string;
+  phone_number: string;
+}
+
+/**
+ * Create (or idempotently confirm) an OWNER account for the currently
+ * signed-in Firebase identity. Call this BEFORE any getMe() for a fresh
+ * Firebase identity — /users/me auto-provisions unknown users as USER,
+ * which would turn this into a 409 ACCOUNT_TYPE_CONFLICT.
+ */
+export const ownerSignup = (payload: OwnerSignupPayload) =>
+  request<AppUser>("/api/v1/owners/signup", {
+    method: "POST",
+    body: payload,
+  });
+
+/** Backend detail string when a Firebase identity already has another role. */
+export const ACCOUNT_TYPE_CONFLICT = "ACCOUNT_TYPE_CONFLICT";
+
+export function isAccountTypeConflict(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    err.status === 409 &&
+    err.message.includes(ACCOUNT_TYPE_CONFLICT)
+  );
+}
 
 export const getMyProfile = () =>
   request<UserProfile>("/api/v1/users/me/profile");

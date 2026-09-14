@@ -1,37 +1,54 @@
 # Project Status
 
-Last updated: Phase 0 completion.
+Last updated: Phase 4A (Property-Lister Account) completion.
 
 ## Current phase
 
 **Phase 0 — Foundation: COMPLETE.**
-Phase 1 (Authentication + Profiles) has NOT started.
+**Phase 1 — Authentication + Profiles: COMPLETE.**
+**Phase 3B — Renter Experience: COMPLETE.**
+**Phase 4A — Property-Lister Account: COMPLETE.**
+Phase 2 (marketplace: properties, listings, search) has NOT started.
 
 ## Completed work
 
 * Simple monorepo: `frontend/`, `backend/`, `docs/`, plus
   `docker-compose.yml`, `.env.example`, `README.md`, `.gitignore`.
-* Backend skeleton: FastAPI app with `GET /healthz` (liveness) and
-  `GET /readyz` (database reachability), SQLAlchemy setup, one real
-  table (`locations`), one Alembic migration (`0001`), one seed script
-  (3 Guwahati records), one passing test.
-* Frontend skeleton: Next.js (App Router) + TypeScript + Tailwind placeholder
-  page with `dev`, `build`, `start`, and `typecheck` scripts.
+* Backend: FastAPI app with `GET /healthz` (liveness) and
+  `GET /readyz` (database reachability), SQLAlchemy setup, `locations`,
+  `users` (+ `phone_number`), and `user_profiles` tables, Alembic
+  migrations `0001`–`0006` (head: `0006`), seed script (Guwahati
+  locations), 125 passing tests.
+* Firebase Authentication architecture (Email/Password + Google),
+  Firebase Auth Emulator for local development, server-side ID-token
+  verification, on-demand user provisioning, `USER` / `OWNER` / `ADMIN`
+  role model, protected profile endpoints, CORS for the local frontend.
+* Frontend: Next.js (App Router) + TypeScript + Tailwind. Renter
+  welcome/entry, signup/login, location-backed onboarding, profile,
+  and the separate property-lister (owner) experience: owner signup/
+  login, Owner Studio dashboard, and owner account page.
 * Local PostgreSQL via Docker Compose (database container only).
-* Environment flow: `.env.example` template → `backend/.env`, loaded by both
-  the app and Alembic. No secrets in source.
+* Environment flow: `.env.example` template → `backend/.env`, loaded by
+  the app. No secrets in source.
 
 ## Verification results (all passing)
 
 * Docker PostgreSQL container runs (`docker compose ps`: Up).
 * Database is exposed on **host port 5433** (container port 5432).
-* `alembic upgrade head` succeeds; `alembic current` shows `0001 (head)`.
-* `python -m app.seed` succeeds (3 Guwahati locations).
+* `alembic upgrade head` succeeds; `alembic current` shows `0006 (head)`;
+  `alembic heads` shows a single head.
+* `python -m app.seed` succeeds (idempotent Guwahati locations).
 * `GET /healthz` returns `{"status":"ok"}`.
 * `GET /readyz` returns `{"status":"ready","db":"up"}`.
-* `pytest -q`: 1 passed.
+* `pytest -q`: 125 passed.
 * `npm run typecheck`: clean.
-* `npm run build`: succeeds, static pages prerendered.
+* `npm run build`: succeeds, static pages prerendered (including the
+  `/owner/*` routes).
+* Phase 4A manual verification completed against the Firebase Auth
+  Emulator + local PostgreSQL (fresh owner email signup → OWNER,
+  owner provisioning without prior USER creation, invalid-data retry,
+  existing OWNER login, USER conflict without promotion); all temporary
+  test accounts were removed from both stores afterward.
 
 ## Current architecture
 
@@ -41,8 +58,9 @@ server, no search engine, no real-time layer.
 
 ## Phase 1 — Slice 1: local Firebase Auth Emulator (COMPLETE)
 
-Slice 1 is done. Slice 2 is NOT started. No application `firebase` or
-`firebase-admin` dependencies have been added; no auth code exists.
+Slice 1 is done. No application `firebase` or `firebase-admin`
+dependencies were added in that slice; no auth code existed yet
+(auth code arrived in Slice 2A).
 
 * Firebase CLI installed (verified with v15.30.0; Java 21 confirmed
   working — Java 11+ is required).
@@ -94,7 +112,7 @@ never touch it. A real production Firebase project will be configured
 later; do NOT create one now, and do NOT create a separate development
 project unless it becomes genuinely necessary.
 
-## Phase 1 — Slice 2A: backend token verification (in progress)
+## Phase 1 — Slice 2A: backend token verification (COMPLETE)
 
 * `firebase-admin` dependency; `app/auth.py` verifies Bearer ID tokens
   via the Admin SDK and returns claims, else 401. No user sync yet.
@@ -121,8 +139,8 @@ project unless it becomes genuinely necessary.
   claims; existing user synced for email/email_verified with
   collision-safe updates, display_name set only at creation; new user +
    empty profile in one transaction, role `USER`; UNIQUE-race retry
-  via rollback + re-query) and `GET /api/v1/users/me` (8-field
-  `UserRead` response, no claim leakage). No profile endpoints, no role
+  via rollback + re-query) and `GET /api/v1/users/me` (`UserRead`
+  response, no claim leakage). No profile endpoints, no role
   mutation.
 * 9 endpoint tests (401s, create/reuse, sync policy, UID-not-email,
   collision paths, race recovery, 500-not-401, no-leak); live emulator
@@ -136,8 +154,9 @@ project unless it becomes genuinely necessary.
   unknown fields; identity and role fields unpatchable; profile always
   resolved from the verified token, never a client user ID).
 * `auth.get_current_user` + reusable `require_role(...)` (role from the
-  PostgreSQL record only; 401 unauthenticated, 403 wrong role). No
-  business endpoints use it yet; no role mutation exists.
+  PostgreSQL record only; 401 unauthenticated, 403 wrong role).
+* Renter profile APIs are restricted to `USER` (`require_role("USER")`),
+  so `OWNER` accounts receive 403 instead of a renter profile.
 * 21 profile/role tests green; live emulator integration verified
   (empty profile → PATCH → persisted; bad token → 401); dev database
   left clean.
@@ -147,8 +166,7 @@ project unless it becomes genuinely necessary.
 * Authorization roles are now `USER` / `OWNER` / `ADMIN` (default
   `USER`). The role describes platform permissions, not whether the
   renter is a student; Apun-Ghar serves students and young
-  professionals alike. `OWNER` and `ADMIN` stay controlled
-  server-side; no self-service role mutation exists.
+  professionals alike.
 * Single migration `0005` (down_revision `0004`): moves existing
   `STUDENT` rows to `USER`, switches the `ck_users_role` CHECK to
   `USER` / `OWNER` / `ADMIN`, and updates the `role` server default.
@@ -157,36 +175,22 @@ project unless it becomes genuinely necessary.
 * The profile UI no longer displays the role label; role remains
   backend authorization data only.
 
-## Phase 1 plan — Authentication + Profiles (NOT started)
+## Phase 1 — Authentication + Profiles (COMPLETE)
 
-Nothing below is implemented. Firebase is not configured.
+Implemented (replaces the earlier not-started plan):
 
-### Scope
-
-* Firebase Email/Password sign-up and login (with email verification
-  where appropriate)
-* Google Sign-In via Firebase
-* Firebase ID token handling in Next.js
-* FastAPI verification of Firebase ID tokens (Firebase Admin SDK)
-* User synchronization into PostgreSQL on first verified request
-* Server-side roles (`USER` / `OWNER` / `ADMIN`, default `USER`);
-  user profile creation and update
-* Proper logout / session handling
-* Authentication and authorization tests
-
-### Owner onboarding — Phase 2, explicitly not Phase 1
-
-Apun-Ghar will support two intents: "I'm looking for a home" (renter)
-and "I want to list a place" (owner). The eventual owner flow is:
-sign up → choose "I want to list a place" → create account → complete
-owner onboarding → verification/review → ADMIN approval → OWNER role →
-create and manage listings.
-
-Phase 1 implements NONE of that: no owner onboarding, no owner
-verification, no listing creation, and no self-service "Become an Owner"
-role-mutation endpoint. New accounts default to `USER`; `OWNER` and
-`ADMIN` stay controlled server-side, with `OWNER` accounts provisioned
-manually/bootstrap for development and testing only.
+* Firebase Email/Password sign-up and login.
+* Google Sign-In via Firebase popup.
+* Firebase ID token handling in Next.js (`AuthProvider`, central API
+  wrapper attaching `Authorization: Bearer` tokens; tokens are never
+  stored in `localStorage`).
+* FastAPI verification of Firebase ID tokens (Firebase Admin SDK).
+* User synchronization into PostgreSQL on first verified request.
+* Server-side roles (`USER` / `OWNER` / `ADMIN`, default `USER`).
+* Renter profile creation/update, onboarding, protected endpoints.
+* Proper logout / session handling via Firebase Auth state.
+* Authentication and authorization tests (auth, users/me, profile,
+  CORS suites green).
 
 ### Responsibilities
 
@@ -210,27 +214,33 @@ PostgreSQL (source of truth for application data):
 * Profile: college/workplace, budget, move-in preferences
 * Other application-specific data (never passwords)
 
-### Expected flows
+### Implemented flows
 
-Email/password:
+Email/password (renter):
 Next.js → Firebase Auth → Firebase ID token → FastAPI → verify token →
 PostgreSQL user → application session/state.
 
-Google:
+Google (renter):
 Next.js → Firebase Auth → Firebase ID token → FastAPI → verify token →
 PostgreSQL user → application session/state.
 
-### Database model (planning level)
+Owner flows differ: see Phase 4A below. The critical rule is that a
+fresh owner Firebase identity reaches `POST /api/v1/owners/signup`
+before any `GET /api/v1/users/me` call, because `/users/me`
+auto-provisions unknown identities as `USER`.
+
+### Database model (as implemented)
 
 * `users`: Firebase UID (unique, links identity to application user),
   application role (`USER` / `OWNER` / `ADMIN`; new users default to
-  `USER`; no role-mutation API in Phase 1), plus basic account fields.
-  No password column — passwords must never be stored in PostgreSQL.
-* `user_profiles`: application-specific profile data
-  (college/workplace, budget, move-in preferences). Fields stay minimal
-  until Phase 1 implementation; no over-specification now.
+  `USER`; no role-mutation API), basic account fields including nullable
+  `phone_number` (populated for owners; no SMS authentication attached).
+  No password column — passwords are never stored in PostgreSQL.
+* `user_profiles`: renter-only application-specific profile data
+  (college/workplace, budget, move-in preferences). `OWNER` accounts do
+  NOT receive a `user_profiles` row.
 
-### Security requirements
+### Security requirements (as implemented)
 
 * No custom password storage or hashing, no custom auth tokens.
 * Firebase Admin SDK server-side verification in FastAPI.
@@ -246,37 +256,116 @@ Phone OTP / phone verification is a **future enhancement, not required
 for MVP authentication**. Reason: phone authentication needs SMS delivery
 with billing and quota considerations; Email/Password + Google avoids
 those costs while Firebase still manages all credentials (we never store
-passwords ourselves). The architecture must not preclude adding phone
-verification/OTP later as an additional sign-in or trust-verification
-method, but it is not an MVP requirement.
+passwords ourselves). Owner phone numbers are collected/stored as contact
+data only — they are NOT used for SMS authentication. The architecture
+must not preclude adding phone verification/OTP later as an additional
+sign-in or trust-verification method, but it is not an MVP requirement.
 
-Also not introduced in Phase 1: PyOTP, SMS providers (Twilio/MSG91/etc.),
+Also not introduced: PyOTP, SMS providers (Twilio/MSG91/etc.),
 Redis, microservices, or any other authentication infrastructure.
+
+## Phase 3B — Renter Experience (COMPLETE)
+
+* Welcome/entry experience (`/`): marketing for visitors, preference
+  summary and onboarding nudge for signed-in renters.
+* Renter signup/login (`/signup`, `/login`): email/password + Google,
+  client validation, friendly Firebase error messages, owner entry link.
+* Location-backed onboarding (`/onboarding`): 3 optional steps —
+  college search, workplace search, budget chips/custom range plus
+  move-in date — with save-as-you-go, skip-freely, and resume/prefill.
+* Renter profile (`/profile`): view/edit college, workplace, budgets,
+  move-in date; sign out.
+* Saved onboarding completion state: per-Firebase-UID `localStorage`
+  flag (`ag-onboarding-done:<uid>`), renter-only.
+* Public entry UX: owner intro page and owner links that grant nothing
+  by themselves.
+* Mobile-first responsive implementation (360px/390px/desktop verified
+  patterns, 44px touch targets).
+
+## Phase 4A — Property-Lister Account (COMPLETE)
+
+Property listers (`OWNER`) are a **separate account type**, not a
+promoted renter. Both account types use the same Firebase
+Authentication project.
+
+* Dedicated owner routes: `/list-your-property` (entry),
+  `/owner/signup`, `/owner/login`, `/owner/dashboard` (Owner Studio),
+  `/owner/account`.
+* Owner email/password signup: Firebase account → display name saved →
+  `POST /api/v1/owners/signup` → dashboard. No `getMe()` before
+  provisioning, enforced with an explicit in-flight guard (fixes an
+  auth-state race that could otherwise auto-provision the fresh
+  identity as `USER`).
+* Owner Google signup: popup → mandatory name/phone completion step →
+  `ownerSignup` → dashboard. No role pre-check via `getMe()`; existing
+  non-OWNER identities surface as `409 ACCOUNT_TYPE_CONFLICT`.
+* Owner phone number collection: mandatory, schema-validated
+  (`^\+?[0-9]{7,15}$`), stored on the user record as contact data.
+  It is NOT used for SMS authentication.
+* Server-side `OWNER` role assignment (`app/owners.py`,
+  `POST /api/v1/owners/signup`): Firebase token verified, UID taken
+  from verified claims, client cannot choose its role, strict
+  `extra="forbid"` body (`display_name`, `phone_number` only).
+* No `USER` → `OWNER` promotion exists. Existing `OWNER` provisioning
+  is idempotent (200); existing `USER`/`ADMIN` gets 409 and is never
+  mutated.
+* `USER`/`OWNER` separation: `OWNER` receives no renter `UserProfile`;
+  owner flows never touch renter onboarding storage; authenticated
+  `OWNER` visiting renter auth/onboarding/profile routes is sent to
+  Owner Studio; renter profile APIs reject `OWNER` (403).
+* Owner dashboard: separate property-management mental model (identity
+  band, honest empty/coming-soon states — no fake listings, enquiries,
+  views, or revenue).
+* Owner account page: real identity from `/users/me`, Firebase sign-out.
+* Backend role enforcement unchanged and authoritative; `require_role`
+  gating; race-safe provisioning.
+* Manual verification completed (fresh email signup, Google-equivalent
+  provisioning, invalid-data retry, existing OWNER login, USER
+  conflict); temporary test accounts cleaned from the emulator and
+  PostgreSQL afterward.
+
+Current product decision — property-lister accounts do NOT require:
+
+* admin approval
+* KYC
+* ownership documents
+* SMS OTP
+* phone verification
+
+Owner property creation/listing functionality is NOT yet implemented —
+that is Phase 2 work.
 
 ## Deferred features
 
-Everything not in Phase 0: listings, search/filters, details/favorites/
-compare, messaging, visits, moderation/reviews/reports, roommates,
-payments/booking, KYC/government-ID handling, native video processing,
+Everything not in Phases 0–4A: property/listing models, add-property
+workflow, photos, listing publishing, search/filters,
+details/favorites/compare, messaging, visits, moderation/reviews/
+reports, roommates, payments/booking, native video processing,
 recommendations, and all future infrastructure (Redis, Elasticsearch/
 OpenSearch, background workers, WebSockets, event bus, microservices,
 Kubernetes).
 
-Phone OTP / phone verification — future enhancement, not required for
-MVP authentication (see Phase 1 plan above).
+Verification/moderation workflows (including any future KYC or
+government-ID handling) are **not currently required** for
+property-lister accounts and no such pipeline exists. Phone OTP / phone
+verification remains a future enhancement, not MVP authentication
+(owner phone numbers are contact data, not SMS-auth factors).
 
 ## Important architectural decisions
 
 1. Simple monorepo (`frontend/`, `backend/`, `docs/`) — no workspaces or
    build orchestration for a 2–4 person team.
 2. FastAPI + PostgreSQL is the application authority; Firebase only proves
-   identity (from Phase 1 on). Frontend role claims are never trusted.
-3. Trust in MVP is transparent signals (phone/owner/listing verified,
-   response rate, reviews, member-since) — no numerical score, no ID docs.
-4. Postgres-only search to start; `pg_trgm`/PostGIS enabled just-in-time.
-5. Dev database credentials live in environment configuration
+   identity. Frontend role claims are never trusted.
+3. Two separate account types share one Firebase project: renters
+   (`USER`, onboarding/profile) and property listers (`OWNER`, Owner
+   Studio). Neither converts into the other.
+4. Trust in MVP is transparent signals — no numerical score, no ID docs,
+   no mandatory verification gate for lister accounts at this stage.
+5. Postgres-only search to start; `pg_trgm`/PostGIS enabled just-in-time.
+6. Dev database credentials live in environment configuration
    (`.env.example` → `backend/.env`), never in Python source.
-6. MVP authentication is Firebase Email/Password + Google Sign-In only.
+7. MVP authentication is Firebase Email/Password + Google Sign-In only.
    Phone OTP was deferred to avoid SMS billing/quotas during the MVP;
    it may return later as sign-in or trust verification without
    architectural changes.
@@ -290,7 +379,8 @@ MVP authentication (see Phase 1 plan above).
   user "rent"`). The compose file therefore maps the container to host
   port 5433, and all defaults use 5433. The native installation was left
   untouched.
-* Only one backend test and frontend typecheck exist so far; per-feature
-  tests arrive with each phase.
+* Backend suite is green (125 pytest tests); frontend relies on
+  `typecheck` + production `build` plus manual emulator verification —
+  no frontend unit-test framework yet.
 * No CI yet — added once the foundation is committed and stable.
 * No Git remote is configured yet.
