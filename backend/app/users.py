@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from .auth import get_current_user
+from .auth import get_current_user, require_role
 from .db import get_db
 from .locations import LocationRead
 from .models import Location, User, UserProfile
@@ -69,7 +69,7 @@ def read_me(user: User = Depends(get_current_user)):
 
 @router.get("/me/profile", response_model=ProfileRead)
 def read_own_profile(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("USER")),
     db: Session = Depends(get_db),
 ):
     profile = (
@@ -81,7 +81,7 @@ def read_own_profile(
 @router.patch("/me/profile", response_model=ProfileRead)
 def update_own_profile(
     payload: ProfileUpdate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_role("USER")),
     db: Session = Depends(get_db),
 ):
     provided = payload.model_dump(exclude_unset=True)

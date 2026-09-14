@@ -507,3 +507,150 @@ def test_owner_rejected_by_admin_route(role_client, engine):
 
 def test_unauthenticated_role_route_401(role_client):
     assert role_client.get("/owner-only").status_code == 401
+
+
+# ---- Slice 4A-3: renter profile USER-only gating ----
+
+OWNER_UID = "t2d-owner-p1"
+ADMIN_UID = "t2d-admin-p1"
+
+
+def owner_signup_body(**kwargs):
+    base = {"display_name": "T2D Owner", "phone_number": "+911234567890"}
+    base.update(kwargs)
+    return base
+
+
+def signup_owner(client, uid, email):
+    c = authed(client, uid=uid, email=email)
+    res = c.post("/api/v1/owners/signup", json=owner_signup_body())
+    assert res.status_code in (200, 201)
+    assert res.json()["role"] == "OWNER"
+    return c
+
+
+def signup_admin(client, engine, uid, email):
+    c = signup_owner(client, uid, email)
+    set_role(engine, uid, "ADMIN")
+    return authed(client, uid=uid, email=email)
+
+
+def fetch_user_row(engine, uid):
+    db = sessionmaker(bind=engine)()
+    try:
+        row = db.query(User).filter(User.firebase_uid == uid).one()
+        return {
+            "email": row.email,
+            "email_verified": row.email_verified,
+            "role": row.role,
+            "display_name": row.display_name,
+            "phone_number": row.phone_number,
+        }
+    finally:
+        db.close()
+
+
+def profile_count_for(engine, uid):
+    from app.models import UserProfile
+
+    db = sessionmaker(bind=engine)()
+    try:
+        return (
+            db.query(UserProfile)
+            .join(User, UserProfile.user_id == User.id)
+            .filter(User.firebase_uid == uid)
+            .count()
+        )
+    finally:
+        db.close()
+
+
+def test_user_get_own_profile_200(client):
+    res = authed(client).get("/api/v1/users/me/profile")
+    assert res.status_code == 200
+
+
+def test_user_patch_own_profile_200(client, engine):
+    college_id, _, _ = location_ids(engine)
+    res = authed(client).patch(
+        "/api/v1/users/me/profile",
+        json={"college_location_id": college_id},
+    )
+    assert res.status_code == 200
+    assert res.json()["college_location_id"] == college_id
+
+
+def test_owner_get_profile_403(client, engine):
+    c = signup_owner(client, OWNER_UID, "t2d-owner-p1@example.com")
+    assert profile_count_for(engine, OWNER_UID) == 0
+    res = c.get("/api/v1/users/me/profile")
+    assert res.status_code == 403
+
+
+def test_owner_patch_profile_403(client, engine):
+    c = signup_owner(client, OWNER_UID, "t2d-owner-p1@example.com")
+    assert profile_count_for(engine, OWNER_UID) == 0
+    res = c.patch("/api/v1/users/me/profile", json={})
+    assert res.status_code == 403
+
+
+def test_admin_get_profile_403(client, engine):
+    c = signup_admin(client, engine, ADMIN_UID, "t2d-admin-p1@example.com")
+    assert profile_count_for(engine, ADMIN_UID) == 0
+    res = c.get("/api/v1/users/me/profile")
+    assert res.status_code == 403
+
+
+def test_admin_patch_profile_403(client, engine):
+    c = signup_admin(client, engine, ADMIN_UID, "t2d-admin-p1@example.com")
+    assert profile_count_for(engine, ADMIN_UID) == 0
+    res = c.patch("/api/v1/users/me/profile", json={})
+    assert res.status_code == 403
+
+
+def test_owner_profile_request_creates_no_profile(client, engine):
+    c = signup_owner(client, OWNER_UID, "t2d-owner-p1@example.com")
+    assert profile_count_for(engine, OWNER_UID) == 0
+    assert c.get("/api/v1/users/me/profile").status_code == 403
+    assert c.patch("/api/v1/users/me/profile", json={}).status_code == 403
+    assert profile_count_for(engine, OWNER_UID) == 0
+
+
+def test_admin_profile_request_creates_no_profile(client, engine):
+    c = signup_admin(client, engine, ADMIN_UID, "t2d-admin-p1@example.com")
+    assert profile_count_for(engine, ADMIN_UID) == 0
+    assert c.get("/api/v1/users/me/profile").status_code == 403
+    assert c.patch("/api/v1/users/me/profile", json={}).status_code == 403
+    assert profile_count_for(engine, ADMIN_UID) == 0
+
+
+def test_owner_profile_request_does_not_mutate_user(client, engine):
+    c = signup_owner(client, OWNER_UID, "t2d-owner-p1@example.com")
+    before = fetch_user_row(engine, OWNER_UID)
+    assert before["role"] == "OWNER"
+    assert c.get("/api/v1/users/me/profile").status_code == 403
+    assert c.patch("/api/v1/users/me/profile", json={}).status_code == 403
+    assert fetch_user_row(engine, OWNER_UID) == before
+
+
+def test_admin_profile_request_does_not_mutate_user(client, engine):
+    c = signup_admin(client, engine, ADMIN_UID, "t2d-admin-p1@example.com")
+    before = fetch_user_row(engine, ADMIN_UID)
+    assert before["role"] == "ADMIN"
+    assert c.get("/api/v1/users/me/profile").status_code == 403
+    assert c.patch("/api/v1/users/me/profile", json={}).status_code == 403
+    assert fetch_user_row(engine, ADMIN_UID) == before
+
+
+def test_owner_me_200(client, engine):
+    c = signup_owner(client, OWNER_UID, "t2d-owner-p1@example.com")
+    res = c.get("/api/v1/users/me")
+    assert res.status_code == 200
+    assert res.json()["role"] == "OWNER"
+
+
+def test_admin_me_200(client, engine):
+    c = signup_admin(client, engine, ADMIN_UID, "t2d-admin-p1@example.com")
+    res = c.get("/api/v1/users/me")
+    assert res.status_code == 200
+    assert res.json()["role"] == "ADMIN"
