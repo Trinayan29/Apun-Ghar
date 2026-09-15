@@ -2,7 +2,7 @@
 
 > **Audience**: Joining developers, technical mentors, evaluators, hackathon judges, and architecture reviewers.  
 > **Status**: Authoritative documentation of the actual codebase as implemented.  
-> **Repository State Verified**: Phase 0 (Foundation), Phase 1 (Auth, User Profiles, Canonical Locations, Frontend Auth/Onboarding), Phase 3B (Renter Experience) & Phase 4A (Property-Lister Account) Complete. 125/125 backend tests passing; frontend TypeScript typecheck and static build passing.
+> **Repository State Verified**: Phase 0 (Foundation), Phase 1 (Auth, User Profiles, Canonical Locations, Frontend Auth/Onboarding), Phase 3B (Renter Experience), Phase 4A (Property-Lister Account), Phase 2A (Design) & Phase 2B (Listing DB Foundation) Complete. 183/183 backend tests passing; frontend TypeScript typecheck and static build passing.
 
 ---
 
@@ -21,7 +21,7 @@
 11. [Frontend Architecture](#11-frontend-architecture)
 12. [Onboarding Flow](#12-onboarding-flow)
 13. [Owner Experience (Current vs. Future)](#13-owner-experience)
-14. [Current Data Model vs. Future Listing Model](#14-current-product-data-model-vs-future-listing-model)
+14. [Current Product Data Model vs. Deferred Entities](#14-current-product-data-model-vs-deferred-entities)
 15. [Roommate Feature Architecture](#15-roommate-feature-architecture)
 16. [Security Architecture](#16-security-architecture)
 17. [Database Migrations Timeline](#17-database-migrations)
@@ -74,7 +74,7 @@ From a software engineering perspective, Apun-Ghar is a **modular monolith** web
 | **Roommate Matching** | Non-existent or third-party forum | Native first-class domain concept (designed into the roadmap) |
 
 ### Current MVP Scope & Development Stage
-- **Current Stage**: **Phase 1 Complete**. The foundational authentication system, user provisioning pipeline, profile management APIs, canonical location database/search API, and frontend onboarding user experience are fully implemented and tested.
+- **Current Stage**: **Phase 4A & Phase 2B Complete**. Authentication, user provisioning, profile APIs, canonical location database/search, frontend onboarding, the owner account experience, and the Phase 2B listing **database foundation** (Alembic `0007`–`0012`) are implemented and tested.
 - **What is Live in the Codebase**:
   - Full authentication loop (Email/Password + Google OAuth via Firebase).
   - Backend token verification and on-demand user provisioning into PostgreSQL.
@@ -82,9 +82,10 @@ From a software engineering perspective, Apun-Ghar is a **modular monolith** web
   - Canonical location search across colleges, workplaces, and neighborhoods.
   - Multi-step onboarding experience capturing student/worker preferences.
   - Direct profile management interface.
-  - Owner entry landing page (`/list-your-property`) with a transparent "coming soon" announcement.
+  - Owner entry landing page (`/list-your-property`), real owner signup/login, and Owner Studio dashboard.
+  - **Phase 2B listing database foundation**: `amenities` + `rental_unit_amenities`, `properties`, `rental_units`, `listings`, `listing_price_components`, `listing_photos` — with normalized pricing (C1–C10 CHECKs), occupancy/gender + tri-state policies, availability, and photo `media_type`. Database only; no listing APIs yet.
 - **What is Deferred to Subsequent Phases**:
-  - Property listing models and owner listing creation.
+  - **Owner property/unit/listing creation APIs** (Phase 2C onwards; the schema already exists from Phase 2B).
   - Public marketplace search, filters, and listing detail pages.
   - Saved listings / bookmarks.
   - In-app messaging and visit scheduling.
@@ -420,6 +421,118 @@ The relational schema is maintained in PostgreSQL 17 and managed via Alembic mig
 +--------------------------------------------------------+
 ```
 
+#### Phase 2B Property/Listing ER Diagram (Alembic `0007`–`0012`)
+
+```text
++--------------------------------------------------------+
+|                       amenities                         |
++--------------------------------------------------------+
+| PK  id               SERIAL / INTEGER                  |
+| UQ  slug             VARCHAR(60) NOT NULL              |
+|     label            TEXT NOT NULL                     |
+|     category         TEXT NULL                         |
+|     icon_slug        VARCHAR(60) NULL                  |
+|     is_active        BOOLEAN NOT NULL DEFAULT TRUE     |
++---------------------------+----------------------------+
+                            | 1
+                            | N
+                            v
++--------------------------------------------------------+
+|                 rental_unit_amenities                  |
++--------------------------------------------------------+
+| PK,FK rental_unit_id   INTEGER (FK -> rental_units)    |
+| PK,FK amenity_id       INTEGER (FK -> amenities)       |
+| IX: ix_ru_amenities_amenity_unit (amenity_id, unit_id) |
++---------------------------+----------------------------+
+                            ^
+                            | N
++---------------------------+----------------------------+
+|                      rental_units                      |
++--------------------------------------------------------+
+| PK  id                SERIAL / INTEGER                 |
+| FK  property_id       INTEGER (FK properties CASCADE)  |
+|     unit_type         VARCHAR(30) (CK constrained)     |
+|     occupancy_type    VARCHAR(20) (CK constrained)     |
+|     capacity          INTEGER (> 0, CK consistent)     |
+|     sharing           'PRIVATE' | 'SHARED'             |
+|     furnishing        (UNFURNISHED/SEMI/FURNISHED)     |
+|     gender_scope      DEFAULT 'ANY'                    |
+|     policy flags      BOOLEAN NULL (tri-state x5)      |
+|     house_rules       TEXT NULL                        |
++---------------------------+----------------------------+
+                            ^
+                            | N
++---------------------------+----------------------------+
+|                       properties                       |
++--------------------------------------------------------+
+| PK  id                SERIAL / INTEGER                 |
+| FK  owner_user_id     INTEGER (FK users RESTRICT)      |
+|     property_type     VARCHAR(30) (CK constrained)     |
+|     address_line      TEXT NOT NULL                    |
+|     locality          TEXT NULL                        |
+| FK  area_location_id  INTEGER (FK locations RESTRICT)  |
+|     city              VARCHAR(100) DEFAULT 'Guwahati'  |
+|     pincode           VARCHAR(10) NULL                 |
+|     gate_closing_time TIME NULL (NULL = unspecified)   |
+|     is_independent    BOOLEAN NULL (NULL = unknown)    |
+|     latitude/longitude FLOAT (both or neither, CK)     |
+| FK  nearest_college   INTEGER (FK locations RESTRICT)  |
+| FK  nearest_workplace INTEGER (FK locations RESTRICT)  |
+|     total_floors / built_year (CK validated, NULL ok)  |
++---------------------------+----------------------------+
+                            ^
+                            | 1
+                            |
++---------------------------+----------------------------+
+|                        listings                        |
++--------------------------------------------------------+
+| PK  id                SERIAL / INTEGER                 |
+| FK  rental_unit_id    INTEGER (FK rental_units CASCADE)|
+|     title             TEXT NOT NULL                    |
+|     description       TEXT NULL                        |
+|     rent_basis        (PER_PERSON|PER_ROOM|PER_UNIT)   |
+|     status            DEFAULT 'DRAFT' (lifecycle CK)   |
+|     availability_status DEFAULT 'AVAILABLE_NOW'        |
+|     available_from    DATE NULL (CK-consistent)        |
+| UQ: uq_listings_unit_active (rental_unit_id) partial   |
++---------------------------+----------------------------+
+                            | 1
+                            | N
++---------------------------+----------------------------+
+|              listing_price_components                  |
++--------------------------------------------------------+
+| PK  id                SERIAL / INTEGER                 |
+| FK  listing_id        INTEGER (FK listings CASCADE)    |
+|     charge_type       VARCHAR(20) (CK constrained)     |
+|     label             TEXT (required iff 'OTHER')      |
+|     calculation_basis VARCHAR(20) (CK constrained)     |
+|     billing_frequency VARCHAR(20) (CK constrained)     |
+|     variability       'FIXED' | 'VARIABLE'             |
+|     amount_paise      BIGINT NULL                      |
+|     rate_paise_per_unit BIGINT NULL                    |
+|     consumption_unit  TEXT NULL                        |
+|     mandatory/included_in_advertised/refundable bools  |
+|     payment_timing    VARCHAR(20) (CK constrained)     |
+|     display_order     INTEGER DEFAULT 0                |
+| CK: C1-C10 pricing integrity rules                     |
++---------------------------+----------------------------+
+                            ^
+                            | N
++---------------------------+----------------------------+
+|                     listing_photos                     |
++--------------------------------------------------------+
+| PK  id                SERIAL / INTEGER                 |
+| FK  listing_id        INTEGER (FK listings CASCADE)    |
+| UQ  storage_key       TEXT NOT NULL                    |
+|     mime              VARCHAR(100) NULL                |
+|     width / height    INTEGER NULL (> 0)               |
+|     display_order     INTEGER DEFAULT 0                |
+|     is_cover          BOOLEAN DEFAULT FALSE            |
+|     upload_status     DEFAULT 'PENDING' (READY gate)   |
+|     media_type        'PHOTO' | 'VIDEO'                |
++--------------------------------------------------------+
+```
+
 ### Table Specifications
 
 #### 1. Table: `users`
@@ -456,6 +569,95 @@ The authoritative registry of physical landmarks, universities, corporate center
 - **Index**:
   - Composite B-Tree index: `ix_locations_type_name` on `(type, name)`. Accelerates queries filtering by location category and prefix-matching institution names.
 
+#### 4. Table: `amenities`
+The canonical catalog of physical facilities, normalized so any rental unit references them via a join table (no repeated free-text amenity strings).
+- **`id`** (`INTEGER`, PK): Unique amenity identifier.
+- **`slug`** (`VARCHAR(60)`, Unique, NOT NULL): Stable, human-readable key (e.g. `wifi`, `ac`, `parking`, `power-backup`, `laundry`, `food-mess`, `drinking-water`, `security-guard`, `attached-bath`, `balcony`, `kitchen-access`, `cctv`, `housekeeping`).
+- **`label`** (`TEXT`, NOT NULL): Display name.
+- **`category`** (`TEXT`, Nullable): Grouping bucket for UI filters.
+- **`icon_slug`** (`VARCHAR(60)`, Nullable): Frontend icon key.
+- **`is_active`** (`BOOLEAN`, NOT NULL, Server Default `true`): Soft-disable flag so referenced amenities can be retired without breaking FK integrity.
+- **`created_at`** / **`updated_at`** (`TIMESTAMPTZ`, NOT NULL): Audit timestamps.
+- Seeded idempotently by `app.seed` with 13 canonical physical-facility amenities.
+
+#### 5. Table: `properties`
+A physical real estate asset (a building, hostel floor, or independent residence) owned by exactly one owner account.
+- **`id`** (`INTEGER`, PK): Unique property identifier.
+- **`owner_user_id`** (`INTEGER`, FK `users.id` `ON DELETE RESTRICT`, NOT NULL): Single ownership anchor — one property, one owner.
+- **`property_type`** (`VARCHAR(30)`, NOT NULL): Constrained by `ck_properties_type` to `PG`, `HOSTEL`, `APARTMENT_FLAT`, `INDEPENDENT_HOUSE`, `STUDIO_BUILDING`, or `OTHER`.
+- **`address_line`** (`TEXT`, NOT NULL): Street-level address.
+- **`locality`** (`TEXT`, Nullable): Informal sub-area / landmark text.
+- **`area_location_id`** (`INTEGER`, FK `locations.id` `ON DELETE RESTRICT`, Nullable): Canonical neighborhood anchor.
+- **`city`** (`VARCHAR(100)`, NOT NULL, Server Default `'Guwahati'`).
+- **`pincode`** (`VARCHAR(10)`, Nullable).
+- **`gate_closing_time`** (`TIME`, Nullable): Night security gate timing. `NULL` means *unspecified*, not "no curfew".
+- **`is_independent`** (`BOOLEAN`, Nullable): `TRUE` = self-contained independent unit, `FALSE` = shared building, `NULL` = unknown/undisclosed.
+- **`latitude`** / **`longitude`** (`FLOAT`, Nullable): Constrained by `ck_properties_lat_range`, `ck_properties_lng_range`, and `ck_properties_geo_both_or_neither` (both present or both `NULL`).
+- **`nearest_college_id`** / **`nearest_workplace_id`** (`INTEGER`, FK `locations.id` `ON DELETE RESTRICT`, Nullable): Canonical anchors for distance-based matching.
+- **`total_floors`** (`INTEGER`, Nullable, `> 0` via `ck_properties_floors`); **`built_year`** (`INTEGER`, Nullable, 1800–2100 via `ck_properties_built_year`).
+- **Indexes**: `ix_properties_owner` (owner lookup), `ix_properties_area` (area lookup), `ix_properties_city_area` (city+area browsing).
+- **Relationships**: `rental_units` cascade (`all, delete-orphan`).
+
+#### 6. Table: `rental_units`
+A rentable unit inside a property (a private room, a bed in a shared room, or an entire flat/studio).
+- **`id`** (`INTEGER`, PK): Unique rental unit identifier.
+- **`property_id`** (`INTEGER`, FK `properties.id` `ON DELETE CASCADE`, NOT NULL): Offer-scoped delete — removing the property removes its units.
+- **`unit_type`** (`VARCHAR(30)`, NOT NULL): `ck_units_type` → `PRIVATE_ROOM`, `SHARED_ROOM_BED`, `ENTIRE_FLAT`, `ENTIRE_STUDIO`, `PG_BED`, `OTHER`.
+- **`occupancy_type`** (`VARCHAR(20)`, NOT NULL): `ck_units_occupancy` → `SINGLE`, `DOUBLE`, `TRIPLE`, `QUAD_PLUS`.
+- **`capacity`** (`INTEGER`, NOT NULL, `> 0`): Number of occupants the unit can monetize.
+- **`sharing`** (`VARCHAR(20)`, NOT NULL): `PRIVATE` or `SHARED`. Consistency CHECKs: `SINGLE` ⇒ `capacity = 1 AND sharing = 'PRIVATE'`; `SHARED` ⇒ `capacity >= 2`; `PRIVATE` ⇒ `capacity = 1`.
+- **`furnishing`** (`VARCHAR(20)`, NOT NULL): `UNFURNISHED`, `SEMI_FURNISHED`, or `FURNISHED`.
+- **`gender_scope`** (`VARCHAR(20)`, Server Default `'ANY'`): `ck_units_gender_scope` → `ANY`, `MALE`, `FEMALE`.
+- **`bathrooms`** (>= 0), **`floor_number`** (>= 0), **`carpet_area_sqft`** (> 0) — all nullable.
+- **Five tri-state policy booleans**: `couple_friendly`, `visitors_allowed`, `pets_allowed`, `smoking_allowed`, `alcohol_allowed`. Each is `NULL` (unspecified) | `TRUE` | `FALSE`, and each carries its own partial index (`ix_units_couple`, `ix_units_visitors`, `ix_units_pets`, `ix_units_smoking`, `ix_units_alcohol`) so filtering only matches explicit `TRUE`/`FALSE` votes without ambiguous `NULL`s.
+- **`house_rules`** (`TEXT`, Nullable): Free text house policy.
+- **M:N to `amenities`** via `rental_unit_amenities`.
+
+#### 7. Table: `rental_unit_amenities`
+Many-to-many join between rental units and the canonical amenity catalog.
+- **`rental_unit_id`** (`INTEGER`, PK, FK `rental_units.id` `ON DELETE CASCADE`).
+- **`amenity_id`** (`INTEGER`, PK, FK `amenities.id` `ON DELETE RESTRICT`) — canonical amenity rows cannot be dropped while referenced by any unit.
+- **Index**: `ix_ru_amenities_amenity_unit` on `(amenity_id, rental_unit_id)` for amenity-first lookups.
+
+#### 8. Table: `listings`
+A commercial offering created from a rental unit.
+- **`id`** (`INTEGER`, PK): Unique listing identifier.
+- **`rental_unit_id`** (`INTEGER`, FK `rental_units.id` `ON DELETE CASCADE`, NOT NULL).
+- **`title`** (`TEXT`, NOT NULL), **`description`** (`TEXT`, Nullable).
+- **`rent_basis`** (`VARCHAR(20)`, NOT NULL): `ck_listings_rent_basis` → `PER_PERSON`, `PER_ROOM`, `PER_UNIT`.
+- **`status`** (`VARCHAR(20)`, Server Default `'DRAFT'`): Current lifecycle — `DRAFT` (editable, never public), `PUBLISHED` (live on the marketplace), `PAUSED` (hidden but retained). `RENTED` and `ARCHIVED` are explicitly deferred future lifecycle states and are NOT current status values.
+- **`availability_status`** (`VARCHAR(30)`, Server Default `'AVAILABLE_NOW'`): `AVAILABLE_NOW`, `AVAILABLE_FROM_DATE`, `OCCUPIED`.
+- **`available_from`** (`DATE`, Nullable): `ck_listings_avail_date` requires `available_from` to be set iff `availability_status = 'AVAILABLE_FROM_DATE'`.
+- **Partial unique index** `uq_listings_unit_active` on `(rental_unit_id)` `WHERE status IN ('DRAFT','PUBLISHED','PAUSED')`: at most one active listing per rental unit at any time.
+- **Indexes**: `ix_listings_status_avail`, `ix_listings_unit_status`.
+- **Relationships**: `price_components` and `photos` cascade (`all, delete-orphan`).
+
+#### 9. Table: `listing_price_components`
+Normalized, rent-transparent pricing lines for a listing.
+- **`id`** (`INTEGER`, PK); **`listing_id`** (`INTEGER`, FK `listings.id` `ON DELETE CASCADE`, NOT NULL).
+- **`charge_type`** (`VARCHAR(20)`, NOT NULL): `RENT`, `DEPOSIT`, `MAINTENANCE`, `FOOD`, `ELECTRICITY`, `WATER`, `INTERNET`, `OTHER`.
+- **`label`** (`TEXT`, Nullable): Required iff `charge_type = 'OTHER'` (C9).
+- **`calculation_basis`** (`VARCHAR(20)`, NOT NULL): `PER_PERSON`, `PER_ROOM`, `PER_UNIT`, `CONSUMPTION`.
+- **`billing_frequency`** (`VARCHAR(20)`, NOT NULL): `MONTHLY`, `QUARTERLY`, `ANNUALLY`, `ONE_TIME`, `USAGE_BASED`.
+- **`variability`** (`VARCHAR(20)`, NOT NULL): `FIXED` or `VARIABLE`.
+- **`amount_paise`** / **`rate_paise_per_unit`** (`BIGINT`, Nullable): Money is always stored as integer paise (1 INR = 100 paise). Exactly one of the two is present in every row (C1).
+- **`consumption_unit`** (`TEXT`, Nullable): UoM for `CONSUMPTION` lines (e.g. `kwh`, `litre`).
+- **`mandatory`** (default `true`), **`included_in_advertised`** (default `false`), **`refundable`** (default `false`) — booleans describing the charge's nature.
+- **`payment_timing`** (`VARCHAR(20)`, NOT NULL): `PER_PERIOD`, `UPFRONT_FULL`, `ON_MOVE_IN`, `ON_EXIT_SETTLED`.
+- **`display_order`** (`INTEGER`, Server Default `0`, `>= 0`).
+- **C1–C10 CHECK constraints** encode the full pricing integrity model (e.g. C5: `DEPOSIT` must be `ONE_TIME` + `FIXED` + refundable + upfront/move-in amount; C6: `RENT` must be mandatory, `FIXED`, with an amount; C8: periodic fixed charges require an amount). UniqueConstraint `uq_lpc_c10_unique` keys `(listing_id, charge_type, calculation_basis, billing_frequency)`.
+
+#### 10. Table: `listing_photos`
+Uploaded media for a listing (photos and videos).
+- **`id`** (`INTEGER`, PK); **`listing_id`** (`INTEGER`, FK `listings.id` `ON DELETE CASCADE`, NOT NULL).
+- **`storage_key`** (`TEXT`, Unique, NOT NULL): Object-storage key (CDN/bucket path).
+- **`mime`** (`VARCHAR(100)`, Nullable); **`width`** / **`height`** (`INTEGER`, Nullable, `> 0`).
+- **`display_order`** (`INTEGER`, Server Default `0`, `>= 0`).
+- **`is_cover`** (`BOOLEAN`, Server Default `false`): Cover photo flag.
+- **`upload_status`** (`VARCHAR(20)`, Server Default `'PENDING'`): `PENDING` | `READY` | `FAILED` (`ck_photos_upload_status`). The publishing guard requires ≥ 3 `READY` photos before a listing can go live.
+- **`media_type`** (`VARCHAR(20)`, Server Default `'PHOTO'`): `PHOTO` | `VIDEO` (`ck_photos_media_type`).
+- **Index**: `ix_photos_listing_order` on `(listing_id, display_order)`.
+
 ### Key Database Design Decisions
 
 1. **Internal Integer Primary Key vs. Firebase UID Foreign Keys**:
@@ -466,6 +668,11 @@ The authoritative registry of physical landmarks, universities, corporate center
    - By enforcing foreign keys to the `locations` table, all users referencing the same university point to the exact same canonical row ID.
 3. **`ON DELETE RESTRICT` on Location Foreign Keys**:
    - If an administrator attempted to delete `"Cotton University"` from the `locations` table while 500 active students had that `college_location_id` on their profile, PostgreSQL refuses the deletion with an integrity error. This prevents orphaned profile relationships.
+4. **Single Ownership Anchor (`properties.owner_user_id`)**:
+   - Every property carries exactly one `owner_user_id` FK to `users` (`ON DELETE RESTRICT`). An owner cannot be deleted while properties reference them, and Phase 2C authorization can resolve ownership in one hop (`property.owner_user_id`) without any cross-table indirection.
+5. **RESTRICT-Canonical, CASCADE-Offer-Scoped Delete Strategy**:
+   - *System/canonical rows* use `ON DELETE RESTRICT`: `locations`, `amenities`, and `users` cannot be removed while referenced.
+   - *Offer-scoped rows* use `ON DELETE CASCADE`: deleting a property cascades to its `rental_units` → `listings` → `listing_price_components` / `listing_photos`, mirroring the existing `users` → `user_profiles` cascade. An owner removing an offering never orphans child data.
 
 ---
 
@@ -580,20 +787,22 @@ The backend application is organized cleanly under `backend/app/`:
 backend/
 ├── alembic/                      # Alembic schema migration environment
 │   ├── env.py                   # Connects SQLAlchemy models to migration context
-│   └── versions/                # Ordered, append-only migration scripts (0001 - 0006)
+│   └── versions/                # Ordered, append-only migration scripts (0001 - 0012)
 ├── alembic.ini                  # Alembic configuration
 ├── requirements.txt             # Locked Python backend dependencies
 ├── app/
 │   ├── __init__.py
 │   ├── main.py                  # Application entry point, CORS, routers, healthz
 │   ├── db.py                    # Database engine, SessionLocal factory, get_db dependency
-│   ├── models.py                # SQLAlchemy declarative ORM models (User, UserProfile, Location)
+│   ├── models.py                # SQLAlchemy models: User, UserProfile, Location, Amenity, Property,
+│   │                            #   RentalUnit, RentalUnitAmenity, Listing, ListingPriceComponent,
+│   │                            #   ListingPhoto
 │   ├── auth.py                  # Firebase token verification, get_current_user, require_role, owner provisioning helpers
 │   ├── users.py                 # User & Profile schemas and route endpoints
 │   ├── owners.py                # OwnerSignupIn schema + POST /api/v1/owners/signup (server-side OWNER assignment, 409 conflict, idempotent repeat)
 │   ├── locations.py             # Location schemas, query validation, and search endpoint
-│   └── seed.py                  # Idempotent database seeder for canonical institutions
-└── tests/                       # Pytest test suite (125 passing tests)
+│   └── seed.py                  # Idempotent database seeder for canonical institutions + amenities
+└── tests/                       # Pytest test suite (183 passing tests)
 ```
 
 ### Module Responsibilities
@@ -616,7 +825,7 @@ backend/
 - **`app/locations.py`**:
   Defines `LocationRead`. Implements `GET /api/v1/locations` with type validation, substring querying via SQL `ILIKE`, and deterministic ordering.
 - **`app/seed.py`**:
-  Maintains the initial canonical catalog of Guwahati educational institutions, major medical/governmental workplaces, and residential areas. Can be executed safely repeatedly (`python -m app.seed`).
+  Maintains the canonical catalog of Guwahati educational institutions, major medical/governmental workplaces, and residential areas, plus the 13 physical-facility amenities. Both are idempotent and safe to run repeatedly (`python -m app.seed`).
 
 ---
 
@@ -752,8 +961,10 @@ experience (Owner Studio), sharing the same Firebase project:
 - **Crucial product reality**: there is intentionally NO admin
   approval, KYC, ownership-document, SMS OTP, or phone-verification
   requirement for lister accounts. Phone numbers are contact data, not
-  authentication factors. Property creation/listing functionality does
-  NOT exist yet — that is Phase 2.
+  authentication factors. The Phase 2B listing **database foundation**
+  (properties, rental units, listings, prices, photos, amenities) IS
+  implemented and tested, but NO owner APIs, forms, or UI exist to
+  create, edit, or publish listings yet — those are Phase 2C onwards.
 
 ### Intended Future Architecture (Phase 2 Roadmap)
 
@@ -778,52 +989,57 @@ explicitly NOT requirements today.
 
 ---
 
-## 14. Current Product Data Model vs. Future Listing Model
+## 14. Current Product Data Model vs. Deferred Entities
 
-To prevent architectural debt, we maintain a strict boundary between what exists in PostgreSQL today and what is planned for future phases.
+To prevent architectural debt, we maintain a strict boundary between what exists in PostgreSQL today (as an implemented, tested schema) and what is only planned for future phases.
 
-### 1. Existing Implemented Entities
+### 1. Implemented Entities (Migrated & Tested)
+
+#### Account & Preference Entities
 - **`users`**: Account identity, external Firebase UID, email verification, platform role (`USER`/`OWNER`/`ADMIN`), audit timestamps.
 - **`user_profiles`**: Renter preferences (college ID, workplace ID, budget range, move-in date).
 - **`locations`**: Canonical directory of physical colleges, workplaces, and urban areas.
 
-### 2. Future Listing Entities (PLANNED / DEFERRED)
+#### Listing Database Foundation (Phase 2B, Alembic `0007`–`0012`)
+- **`amenities`** + **`rental_unit_amenities`**: Normalized amenity catalog (13 canonical seeds) joined to rental units via a composite-PK many-to-many table.
+- **`properties`**: Physical real estate anchored to a single `owner_user_id` with a canonical `area_location_id` plus optional geo and nearest college/workplace anchors.
+- **`rental_units`**: Occupancy/gender/policy model (`unit_type`, `occupancy_type`, `capacity`, `sharing`, `gender_scope`) with tri-state policy flags and `house_rules`.
+- **`listings`**: Commercial offering tied to a rental unit with `rent_basis`, lifecycle/availability status, and a partial-unique active-listing guard.
+- **`listing_price_components`**: Normalized pricing with C1–C10 CHECK constraints; money stored as `BIGINT` paise.
+- **`listing_photos`**: Photo/video metadata with `media_type`, `upload_status`, `is_cover`, and `display_order`.
+
+> These entities are live in the schema (`alembic upgrade head` = `0012`), verified by the migration and model test suites (see §17/§18). There are currently **NO API endpoints or frontend flows** that create or mutate them — that is Phase 2C onwards.
+
+### 2. Future / Domain Entities (PLANNED / DEFERRED)
 
 ```text
-[FUTURE ENTITIES - NOT YET IMPLEMENTED IN CODEBASE]
+[FUTURE ENTITIES - NOT IN SCHEMA YET / DEFERRED]
 
-+--------------------+       +----------------------+       +-----------------------+
-|     Properties     |       |       Listings       |       |     ListingPhotos     |
-+--------------------+       +----------------------+       +-----------------------+
-| id                 | 1   N | id                   | 1   N | id                    |
-| owner_user_id (FK) +------>| property_id (FK)     +------>| listing_id (FK)       |
-| address            |       | title, description   |       | cdn_url, display_order|
-| canonical_loc_id   |       | rent_monthly         |       | is_cover_photo        |
-| property_type (PG/ |       | security_deposit     |       +-----------------------+
-|  flat/hostel/room) |       | available_from       |
-+--------------------+       | status (draft/active/|       +-----------------------+
-                             |         rented)      |       |       Amenities       |
-                             +----------+-----------+       +-----------------------+
-                                        |                   | id, name, icon_slug   |
-                                        | N                 +-----------+-----------+
-                                        v                               | N
-                             +----------------------+                   |
-                             |   ListingAmenities   |<------------------+
++--------------------+       +----------------------+
+|    SavedListing    |       |       Visits         |
++--------------------+       +----------------------+
+| id                 |       | id                   |
+| user_id (FK users) |       | listing_id (FK)      |
+| listing_id (FK)    |       | user_id (FK)         |
++--------------------+       | scheduled_time       |
+                             | status               |
                              +----------------------+
-                             | listing_id (FK)      |
-                             | amenity_id (FK)      |
-                             +----------------------+
+
++--------------------+
+|    RoommatePost    |
++--------------------+
+| user_id (FK)       |
+| listing_id (FK, opt) |
+| intent / budget /prefs |
++--------------------+
 ```
 
-- **`Property`** [FUTURE]: Physical real estate unit tied to an owner and location.
-- **`Listing`** [FUTURE]: The commercial rental offering (e.g., "Private Room in 3BHK", "Double Sharing Boys PG"), specifying rent, deposit, notice period, and status.
-- **`ListingPhoto`** [FUTURE]: Photo metadata referencing cloud storage CDN URLs.
-- **`Amenity`** & **`ListingAmenity`** [FUTURE]: Standardized amenities (Wi-Fi, Food Included, Attached Washroom, Power Backup).
 - **`Enquiry`** / **`VisitBooking`** [FUTURE]: Scheduled site visits requested by renters.
 - **`SavedListing`** [FUTURE]: User bookmarks.
+- **`RoommatePost`** [FUTURE]: Roommate discovery posts (see §15).
 
-### Why Listing Tables Were Not Implemented Prematurely
-Implementing database tables before business rules (such as room-sharing structures, utility billing models, and cancellation policies) are finalized leads to costly schema migrations and data model corruption. We build each phase end-to-end only when requirements are locked.
+### Why the Listing Tables Were Built Before the APIs
+The Phase 2B schema encodes the finalized business rules — room-sharing structures, tri-state policies, normalized pricing with C1–C10 integrity CHECKs, availability, and photo/media requirements — so that the Phase 2C API layer lands on a stable, constraint-enforced foundation. Punitive schema decisions are locked now via database `CHECK`/`UNIQUE` constraints rather than re-migrated later, which is exactly why the premature-tables concern that once applied to Per-vs-listing design no longer applies here.
 
 ---
 
@@ -908,7 +1124,25 @@ Database migrations are strictly version-controlled using Alembic under `backend
  0005_user_role.py (2026-09-13)
    │
    ▼
- 0006_add_users_phone_number.py (2026-09-13) [HEAD]
+ 0006_add_users_phone_number.py (2026-09-13)
+  │
+  ▼
+0007_create_amenities.py (2026-09-15)
+  │
+  ▼
+0008_create_properties.py (2026-09-15)
+  │
+  ▼
+0009_create_rental_units.py (2026-09-15)
+  │
+  ▼
+0010_create_listings.py (2026-09-15)
+  │
+  ▼
+0011_create_listing_price_components.py (2026-09-15)
+  │
+  ▼
+0012_create_listing_photos.py (2026-09-15) [HEAD]
 ```
 
 ### Detailed Migrations Log
@@ -921,9 +1155,15 @@ Database migrations are strictly version-controlled using Alembic under `backend
 | **`0004`** | `0004_profile_location_fks.py` | `0003` | **Relational Integrity**: Adds `college_location_id` and `workplace_location_id` integer foreign keys to `user_profiles` referencing `locations.id` (`ON DELETE RESTRICT`). Safely backfills existing data via exact SQL match, drops legacy free-text columns. Downgrade restores columns and names. |
 | **`0005`** | `0005_user_role.py` | `0004` | **Domain Model Correction**: Drops `ck_users_role`, migrates legacy `'STUDENT'` values to `'USER'`, updates default to `'USER'`, and establishes new constraint `role IN ('USER', 'OWNER', 'ADMIN')`. |
 | **`0006`** | `0006_add_users_phone_number.py` | `0005` | **Owner Contact Data**: Adds nullable `users.phone_number` (`VARCHAR(32)`), populated by owner signup. No SMS/auth semantics attached. |
+| **`0007`** | `0007_create_amenities.py` | `0006` | **Amenity Catalog**: Creates `amenities` table (`slug`, `label`, `category`, `icon_slug`, `is_active`, timestamps) with unique `slug`. |
+| **`0008`** | `0008_create_properties.py` | `0007` | **Physical Assets**: Creates `properties` with single-owner FK, `property_type` CHECK, canonical area + nearest college/workplace location FKs, optional paired lat/long, `gate_closing_time`, `is_independent`, `total_floors`/`built_year`, and composite indexes (`owner`, `area`, `city+area`). |
+| **`0009`** | `0009_create_rental_units.py` | `0008` | **Occupancy/Policies**: Creates `rental_units` with unit/occupancy/sharing/furnishing/gender CHECKs, occupancy-consistency rules, five tri-state policy booleans (each partial-indexed), `house_rules`, and the `rental_unit_amenities` M:N join table. |
+| **`0010`** | `0010_create_listings.py` | `0009` | **Commercial Offerings**: Creates `listings` with `rent_basis`, lifecycle/availability status CHECKs, availability-date consistency, and partial-unique active-listing guard `uq_listings_unit_active`. |
+| **`0011`** | `0011_create_listing_price_components.py` | `0010` | **Normalized Pricing**: Creates `listing_price_components` with `BIGINT` paise amounts/rates, and C1–C10 CHECK constraints + a uniqueness constraint covering charge/calculation/frequency. |
+| **`0012`** | `0012_create_listing_photos.py` | `0011` | **Media Model**: Creates `listing_photos` with unique `storage_key`, `media_type` (PHOTO/VIDEO), `upload_status` (PENDING/READY/FAILED), and `(listing_id, display_order)` index. |
 
 ### Golden Rule: Migrations are Append-Only
-Committed migrations must **never be edited or deleted**. If a schema change is required, a new migration (e.g. `0006_...`) must be generated and applied. Every migration script must include a fully tested, working `downgrade()` function to ensure reversible deployments.
+Committed migrations must **never be edited or deleted**. If a schema change is required, a new migration (e.g. `0012_...`) must be generated and applied. Every migration script must include a fully tested, working `downgrade()` function to ensure reversible deployments.
 
 ---
 
@@ -933,8 +1173,8 @@ Quality is verified via comprehensive automated test suites on both backend and 
 
 ### Backend Automated Tests (Pytest)
 The backend test suite is executed using `pytest` inside the virtual environment:
-- **Total Tests**: **125 passed** (0 failures).
-- **Execution Time**: ~10 seconds.
+- **Total Tests**: **183 passed** (0 failures, 0 skipped).
+- **Execution Time**: ~11 seconds.
 - **Coverage Breakdown**:
   - **`test_auth.py`**: Validates Bearer token parsing, emulator initialization, mock claim handling, and 401 responses on malformed headers.
   - **`test_cors.py`**: Verifies allowed origins (`http://localhost:3000`), methods (`GET`, `PATCH`), and headers.
@@ -944,6 +1184,8 @@ The backend test suite is executed using `pytest` inside the virtual environment
   - **`test_users_me.py`**: Tests provisioning: unauthenticated 401s, user + profile creation on first login, idempotent user re-use on subsequent logins, email sync policies, UID-based identity isolation, email collision handling, and race condition recovery.
   - **`test_users_profile.py`**: Tests profile endpoints: GET own profile, partial PATCH updates, explicit null clearing, 422 errors on non-existent or mismatched location types (e.g. assigning an area to a college), cross-field budget range validation, immutability of roles and identity fields via PATCH, user isolation, and `require_role` permission checks (401 unauthenticated, 403 unauthorized).
   - **`test_owners_signup.py`**: Tests owner provisioning: 201 creation as `OWNER` with no `UserProfile` row, idempotent repeat for an existing `OWNER`, 409 `ACCOUNT_TYPE_CONFLICT` for existing `USER`/`ADMIN` (never mutated), strict `extra="forbid"` body validation, phone-pattern and display-name 422s, email-collision handling, and race recovery.
+  - **`test_2b_migrations.py`**: Verifies append-only migration integrity end-to-end: full upgrade through `0012` (head), round-trip downgrade to `0006` and re-upgrade to `0012`, verifying every Phase 2B table/constraint is created and dropped cleanly.
+  - **`test_2b_models.py`**: Verifies the Phase 2B models against a throwaway database: normalized amenity catalog + join table, property structure/location CHECKs, occupancy-consistency rules, tri-state policies, listing lifecycle/availability, C1–C10 pricing integrity, photo/media rules, cascade vs. restrict delete behavior, and FK integrity.
 
 ### Frontend Verification
 - **TypeScript Typecheck**:
@@ -1047,7 +1289,7 @@ To maintain a production-grade codebase, all contributors adhere to standard bra
 1. **Never Commit Directly to `main`**: All features, bug fixes, and refactors must go through a feature branch.
 2. **Atomic, Descriptive Commits**: Use conventional prefixes (`feat:`, `fix:`, `chore:`, `docs:`, `test:`). Avoid giant, monolithic commits like "updates" or "fixed stuff".
 3. **Run Pre-Commit Verifications**:
-    - Backend: Run `pytest` inside `.venv` (all 125 tests must pass).
+    - Backend: Run `pytest` inside `.venv` (all 183 tests must pass).
    - Frontend: Run `npm run typecheck` and `npm run build`.
 4. **Never Check In Secrets**: Real `.env` files, production service account keys, and credentials must never enter version control.
 
@@ -1104,7 +1346,7 @@ Every item in this checklist has been verified directly against the codebase:
 
 - [x] **Monorepo Foundation**: Clean decoupled structure (`frontend/`, `backend/`, `docs/`).
 - [x] **Containerized Database**: PostgreSQL 17 Alpine configured via `docker-compose.yml` on host port 5433.
-- [x] **Alembic Database Migrations**: Sequential migrations 0001 through 0006 tracking all schema iterations (0006 adds nullable `users.phone_number` for owner contact data).
+- [x] **Alembic Database Migrations**: Sequential migrations 0001 through 0012 tracking all schema iterations (0006 adds nullable `users.phone_number` for owner contact data; 0007–0012 add the Phase 2B listing database foundation).
 - [x] **Firebase Auth Emulator**: Hermetic local auth environment configured via `firebase.json` (ports 9099 & 4000).
 - [x] **Server Token Verification**: FastAPI dependency (`app.auth.get_firebase_claims`) validating Bearer JWTs.
 - [x] **On-Demand User Provisioning**: Automatic, race-condition-safe provisioning of `users` and `user_profiles` in PostgreSQL.
@@ -1129,7 +1371,14 @@ Every item in this checklist has been verified directly against the codebase:
 - [x] **Owner Studio Dashboard**: `/owner/dashboard` with real owner identity and honest empty/coming-soon states (no fake data).
 - [x] **Owner Account Page**: `/owner/account` with real identity rows and Firebase sign-out; no renter profile/onboarding coupling.
 - [x] **Owner Provisioning API**: `POST /api/v1/owners/signup` — server-side `OWNER` assignment, idempotent repeat, 409 conflict without mutation, strict body validation.
-- [x] **Automated Test Coverage**: 125 automated backend Pytest tests covering models, auth, locations, profiles, and owner signup.
+- [x] **Phase 2B Listing Database Foundation**: `amenities`, `properties`, `rental_units`, `rental_unit_amenities`, `listings`, `listing_price_components`, and `listing_photos` tables implemented via Alembic `0007`–`0012` (schema only; no APIs yet).
+- [x] **Normalized Amenity Catalog**: 13 canonical physical-facility amenities seeded idempotently (`wifi`, `ac`, `parking`, `power-backup`, `laundry`, `food-mess`, `drinking-water`, `security-guard`, `attached-bath`, `balcony`, `kitchen-access`, `cctv`, `housekeeping`) with `RESTRICT`-protected join references.
+- [x] **Property Structure & Location Model**: Single-owner properties with `property_type`, canonical `area_location_id` + nearest college/workplace anchors, optional paired lat/long, `gate_closing_time` (NULL = unspecified), and tri-state `is_independent`.
+- [x] **Occupancy & Policies Model**: `rental_units` with unit/occupancy/sharing/furnishing/gender CHECKs, occupancy-consistency rules (SINGLE ⇒ capacity 1 + PRIVATE, SHARED ⇒ ≥ 2, PRIVATE ⇒ 1), and five tri-state policy booleans with partial indexes.
+- [x] **Listing Lifecycle & Availability**: `listings` with rent-basis CHECK, DRAFT/PUBLISHED/PAUSED lifecycle (RENTED/ARCHIVED deferred to a future lifecycle layer), availability status/date consistency CHECK, and partial-unique active-listing guard `uq_listings_unit_active`.
+- [x] **Normalized Pricing with C1–C10**: `listing_price_components` storing money as `BIGINT` paise with CHECK constraints across charge type, calculation basis, billing frequency, variability, and payment timing.
+- [x] **Photo/Video Media Model**: `listing_photos` with `media_type`, `upload_status`, unique `storage_key`, and the ≥ 3 READY-photo publishing requirement.
+- [x] **Automated Test Coverage**: 183 automated backend Pytest tests covering models, auth, locations, profiles, owner signup, Phase 2B migrations, and Phase 2B models.
 
 ---
 
@@ -1137,8 +1386,7 @@ Every item in this checklist has been verified directly against the codebase:
 
 The following items are **explicitly NOT implemented** in the current codebase:
 
-- [ ] **Property Models & Tables**: No `properties`, `listings`, `photos`, or `amenities` tables exist in the database.
-- [ ] **Owner Listing Creation**: No forms or API endpoints exist for owners to submit or edit listings.
+- [ ] **Owner Listing Creation APIs**: No API endpoints or frontend flows exist to create, edit, or publish properties, rental units, or listings. The Phase 2B database foundation (properties, rental units, listings, pricing, photos, amenities) IS implemented and tested — but the owner CRUD/API layer on top of it is not yet built (Phase 2C onwards). See §14 and §22.
 - [ ] **Owner Verification Pipeline**: No document upload, KYC, approval, SMS OTP, or phone-verification workflows exist — and none are currently required for lister accounts.
 - [ ] **Owner Property Management Portal**: `/owner/dashboard` exists as an account studio with honest empty states, but no property/listing management functionality exists yet.
 - [ ] **Public Marketplace Search**: No property catalog search, map view, or filter UI exists.
@@ -1171,7 +1419,7 @@ The following items are **explicitly NOT implemented** in the current codebase:
 3. **No Active Property Browsing on Home Page**:
    - *Issue*: The root page (`/`) displays saved preference confirmation for logged-in users rather than property cards.
    - *Impact*: Users cannot browse listings yet.
-   - *Why Deferred*: Phase 1 focused strictly on authentication, identity, and renter profiling. Listing models arrive in Phase 2.
+   - *Why Deferred*: Phase 1 focused strictly on authentication, identity, and renter profiling. The listing database foundation arrived in Phase 2B; marketplace browse/search APIs are Phase 2C onwards.
 4. **PostgreSQL `ILIKE` for Location Search**:
    - *Issue*: Substring search using `%pattern%` cannot utilize standard B-Tree indexes for left-wildcard queries.
    - *Impact*: Negligible on small catalogs (< 1,000 rows), but will degrade if millions of locations are inserted.
@@ -1191,7 +1439,7 @@ Use these structured responses when discussing Apun-Ghar in technical interviews
 > "I'm building Apun-Ghar, a rental marketplace designed specifically for students and young professionals in tier-2 cities, starting with Guwahati. Unlike generic broker-dominated portals like 99acres or family-focused platforms like NoBroker, Apun-Ghar anchors rental discovery around canonical colleges and workplaces with transparent pricing. Architecturally, it's a decoupled modular monolith with a Next.js App Router frontend, a FastAPI backend, PostgreSQL for relational data, and Firebase for identity."
 
 ### B. 1-Minute Pitch
-> "Finding rental housing as a student or young worker in India is broken—it's dominated by sketchy brokers, fake listings, and fragmented WhatsApp groups. With Apun-Ghar, we're building a structured, verified marketplace. Renter onboarding captures budget and target institutions, mapping them to canonical database entities rather than free-text strings. On the backend, we run FastAPI with SQLAlchemy 2.0 and PostgreSQL 17, enforcing strict database check constraints and relational foreign keys. For auth, we decoupled identity by using Firebase Authentication for JWT issuance, while our backend performs server-side signature verification and maintains its own role-based authorization model in PostgreSQL. We've completed the authentication, user provisioning, and canonical location systems with 125 passing backend tests."
+> "Finding rental housing as a student or young worker in India is broken—it's dominated by sketchy brokers, fake listings, and fragmented WhatsApp groups. With Apun-Ghar, we're building a structured, verified marketplace. Renter onboarding captures budget and target institutions, mapping them to canonical database entities rather than free-text strings. On the backend, we run FastAPI with SQLAlchemy 2.0 and PostgreSQL 17, enforcing strict database check constraints and relational foreign keys. For auth, we decoupled identity by using Firebase Authentication for JWT issuance, while our backend performs server-side signature verification and maintains its own role-based authorization model in PostgreSQL. We've completed authentication, user provisioning, canonical locations, and the Phase 2B listing database foundation — 183 passing backend tests."
 
 ### C. 3-Minute Deep Dive
 > "Let me walk you through the technical architecture of Apun-Ghar. The system is intentionally designed as a decoupled modular monolith. On the frontend, we use Next.js 16 with the App Router, React 19, and Tailwind CSS v4. On the backend, we use FastAPI running on Uvicorn, with SQLAlchemy 2.0 and Alembic for migrations.
@@ -1202,7 +1450,7 @@ Use these structured responses when discussing Apun-Ghar in technical interviews
 >
 > For authorization, we strictly reject frontend role claims. The database stores the authoritative role—`USER`, `OWNER`, or `ADMIN`—enforced by a PostgreSQL CHECK constraint. We renamed our initial 'STUDENT' role to `USER` via a database migration because our target market includes young corporate professionals and renters of all kinds.
 >
-> Another key architectural decision was our location system. Instead of letting users type arbitrary strings for their university or workplace, we introduced a canonical `locations` table. User profiles link to locations via foreign keys with `ON DELETE RESTRICT`. This guarantees data cleanliness for future proximity matching. The entire backend is covered by 125 automated pytest tests, and both TypeScript typechecking and static builds pass cleanly."
+> Another key architectural decision was our location system. Instead of letting users type arbitrary strings for their university or workplace, we introduced a canonical `locations` table. User profiles link to locations via foreign keys with `ON DELETE RESTRICT`. This guarantees data cleanliness for future proximity matching. The entire backend is covered by 183 automated pytest tests — including the Phase 2B migration and model suites for the listing database foundation — and both TypeScript typechecking and static builds pass cleanly."
 
 
 ### D. "Explain the Architecture"
@@ -1230,7 +1478,7 @@ Use these structured responses when discussing Apun-Ghar in technical interviews
 > "Microservices solve organizational scaling problems for companies with hundreds of engineers and distinct domain boundaries. For an early-stage product with a small team, microservices introduce distributed transaction headaches, network latency, complex deployments, and debugging nightmares. A modular monolith provides clean code boundaries inside a single deployable unit, giving us maximum speed with zero operational overhead."
 
 ### L. "What Would You Build Next?"
-> "Phase 2 focuses on supply: designing the `Property` and `Listing` relational models, building the owner verification pipeline, and creating an owner listing dashboard. Following that, we will implement public marketplace search with location-anchored filtering, in-app visit scheduling, and our roommate discovery feature."
+> "Phase 2B already delivered and committed the database foundation for properties, rental units, listings, pricing (C1–C10), photos, and amenities, with 183 passing backend tests. Phase 2C builds the owner-side listing creation APIs and dashboard flows on top of that schema. After that comes public marketplace search with location-anchored filtering, in-app visit scheduling, and roommate discovery."
 
 ---
 
@@ -1313,8 +1561,8 @@ The following end-to-end diagram displays the complete runtime architecture of A
     │     └── GET   /readyz  (PostgreSQL connectivity test)
     │
     │  =============================================================================
-    │  [FUTURE PLUG-IN MODULES - PHASE 2 & BEYOND]
-    │  ├── [FUTURE: Listings & Properties] (app/listings.py) ──> Listings CRUD
+    │  [FUTURE PLUG-IN MODULES - PHASE 2C & BEYOND]
+    │  ├── [FUTURE: Listings & Properties] (app/listings.py) ──> Property/listing CRUD
     │  ├── [FUTURE: Marketplace Search]    (app/search.py)   ──> Proximity filter
     │  ├── [FUTURE: Visits & Enquiries]    (app/visits.py)   ──> Schedule property tours
     │  ├── [FUTURE: Roommates]             (app/roommates.py)──> Roommate matching posts
@@ -1325,17 +1573,25 @@ The following end-to-end diagram displays the complete runtime architecture of A
 [PERSISTENCE LAYER]
   PostgreSQL 17 Database (Docker: container 5432 -> host 5433)
     │
-    ├── CURRENT TABLES (Alembic Head: 0006)
-    │     ├── users          (id, firebase_uid, email, role, display_name, phone_number, timestamps)
-    │     ├── user_profiles  (user_id, college_loc_id, workplace_loc_id, budgets, move_in)
-    │     └── locations      (id, type, name, city) [Index: ix_locations_type_name]
+    ├── CURRENT TABLES (Alembic Head: 0012)
+    │     ├── users                    (id, firebase_uid, email, role, display_name, phone_number, timestamps)
+    │     ├── user_profiles            (user_id, college_loc_id, workplace_loc_id, budgets, move_in)
+    │     ├── locations                (id, type, name, city) [Index: ix_locations_type_name]
+    │     ├── amenities                (slug, label, category, icon_slug, is_active)
+    │     ├── properties               (owner_user_id, property_type, address_line, area_location_id, city,
+    │     │                             pincode, gate_closing_time, is_independent, geo, nearest anchors)
+    │     ├── rental_units             (property_id, unit/occupancy/sharing/furnishing/gender, capacity,
+    │     │                             tri-state policies, house_rules)
+    │     ├── rental_unit_amenities    (rental_unit_id, amenity_id)
+    │     ├── listings                 (rental_unit_id, title, rent_basis, status, availability_status,
+    │     │                             available_from) [partial-unique uq_listings_unit_active]
+    │     ├── listing_price_components (listing_id, charge_type, calculation_basis, billing_frequency,
+    │     │                             amount/rate paise, C1-C10 checks)
+    │     └── listing_photos           (listing_id, storage_key, is_cover, upload_status, media_type)
     │
     └── FUTURE TABLES [PLANNED]
-          ├── properties     (owner_id, address, property_type)
-          ├── listings       (property_id, rent, deposit, status)
-          ├── listing_photos (listing_id, cdn_url, display_order)
-          ├── amenities      (name, icon_slug)
-          ├── visits         (listing_id, user_id, scheduled_time, status)
-          └── roommate_posts (user_id, intent, budget, preferences)
+          ├── visits          (listing_id, user_id, scheduled_time, status)
+          ├── saved_listings  (user_id, listing_id)
+          └── roommate_posts  (user_id, intent, budget, preferences)
 ===================================================================================================
 ```
