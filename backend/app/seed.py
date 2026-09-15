@@ -1,5 +1,5 @@
 from .db import SessionLocal
-from .models import Location
+from .models import Amenity, Location
 
 # Initial/development catalog only. NOT exhaustive. Canonical identity is (type, name).
 SEED_LOCATIONS = [
@@ -35,6 +35,24 @@ RENAMES = {
     ("college", "Assam down town University"): "Assam Down Town University",
     ("college", "Assam Don Bosco University (ADTU)"): "Assam Don Bosco University",
 }
+
+# Physical facilities only — policies, times, and building facts are NOT amenities.
+# Canonical identity is slug.
+SEED_AMENITIES = [
+    {"slug": "wifi", "label": "Wi-Fi", "category": "connectivity"},
+    {"slug": "ac", "label": "Air Conditioning", "category": "comfort"},
+    {"slug": "parking", "label": "Parking", "category": "comfort"},
+    {"slug": "power-backup", "label": "Power Backup", "category": "comfort"},
+    {"slug": "laundry", "label": "Laundry", "category": "comfort"},
+    {"slug": "food-mess", "label": "Food Mess", "category": "food"},
+    {"slug": "drinking-water", "label": "Drinking Water", "category": "comfort"},
+    {"slug": "security-guard", "label": "Security Guard", "category": "safety"},
+    {"slug": "attached-bath", "label": "Attached Bathroom", "category": "comfort"},
+    {"slug": "balcony", "label": "Balcony", "category": "space"},
+    {"slug": "kitchen-access", "label": "Kitchen Access", "category": "space"},
+    {"slug": "cctv", "label": "CCTV", "category": "safety"},
+    {"slug": "housekeeping", "label": "Housekeeping", "category": "comfort"},
+]
 
 
 def main() -> None:
@@ -72,8 +90,17 @@ def main() -> None:
             if exists is None:
                 db.add(Location(**item))
                 inserted += 1
+        for item in SEED_AMENITIES:
+            exists = (
+                db.query(Amenity.id)
+                .filter(Amenity.slug == item["slug"])
+                .first()
+            )
+            if exists is None:
+                db.add(Amenity(**item))
+                inserted += 1
         db.commit()
-        print(f"seeded {inserted} locations, renamed {renamed}")
+        print(f"seeded {inserted} locations/amenities, renamed {renamed}")
     finally:
         db.close()
 
