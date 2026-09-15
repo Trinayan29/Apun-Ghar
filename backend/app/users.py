@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 
 from .auth import get_current_user, require_role
 from .db import get_db
-from .locations import LocationRead
-from .models import Location, User, UserProfile
+from .locations import LocationRead, validate_location_reference
+from .models import User, UserProfile
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
 
@@ -50,18 +50,6 @@ class ProfileUpdate(BaseModel):
     move_in_date: date | None = None
 
 
-def _validate_location(
-    db: Session, location_id: int, expected_type: str, field: str
-) -> Location:
-    row = db.get(Location, location_id)
-    if row is None or row.type != expected_type:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"invalid {field}: must reference a '{expected_type}' location",
-        )
-    return row
-
-
 @router.get("/me", response_model=UserRead)
 def read_me(user: User = Depends(get_current_user)):
     return user
@@ -90,7 +78,7 @@ def update_own_profile(
         "college_location_id" in provided
         and provided["college_location_id"] is not None
     ):
-        _validate_location(
+        validate_location_reference(
             db,
             provided["college_location_id"],
             "college",
@@ -100,7 +88,7 @@ def update_own_profile(
         "workplace_location_id" in provided
         and provided["workplace_location_id"] is not None
     ):
-        _validate_location(
+        validate_location_reference(
             db,
             provided["workplace_location_id"],
             "workplace",

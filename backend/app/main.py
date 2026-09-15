@@ -5,6 +5,7 @@ from sqlalchemy import text
 from .db import engine
 from .locations import router as locations_router
 from .owners import router as owners_router
+from .properties import router as properties_router
 from .users import router as users_router
 
 app = FastAPI(title="Rent API")
@@ -20,6 +21,7 @@ app.add_middleware(
 app.include_router(users_router)
 app.include_router(owners_router)
 app.include_router(locations_router)
+app.include_router(properties_router)
 
 
 @app.get("/healthz")

@@ -46,3 +46,15 @@ def list_locations(
 
     stmt = stmt.order_by(Location.name.asc(), Location.id.asc()).limit(limit)
     return list(db.execute(stmt).scalars().all())
+
+
+def validate_location_reference(
+    db: Session, location_id: int, expected_type: str, field: str
+) -> Location:
+    row = db.get(Location, location_id)
+    if row is None or row.type != expected_type:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"invalid {field}: must reference a '{expected_type}' location",
+        )
+    return row
