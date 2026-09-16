@@ -74,7 +74,7 @@ From a software engineering perspective, Apun-Ghar is a **modular monolith** web
 | **Roommate Matching** | Non-existent or third-party forum | Native first-class domain concept (designed into the roadmap) |
 
 ### Current MVP Scope & Development Stage
-- **Current Stage**: **Phase 4A & Phase 2B Complete**. Authentication, user provisioning, profile APIs, canonical location database/search, frontend onboarding, the owner account experience, and the Phase 2B listing **database foundation** (Alembic `0007`–`0012`) are implemented and tested.
+- **Current Stage**: **Phase 4A & Phase 2B & Phase 2C & Phase 2D**. Authentication, user provisioning, profile APIs, canonical location database/search, frontend onboarding, the owner account experience, and the Phase 2B listing **database foundation** (Alembic `0007`–`0012`) are implemented and tested. The Phase 2C owner property APIs and Phase 2D owner rental unit APIs are complete.
 - **What is Live in the Codebase**:
   - Full authentication loop (Email/Password + Google OAuth via Firebase).
   - Backend token verification and on-demand user provisioning into PostgreSQL.
@@ -1378,7 +1378,7 @@ Every item in this checklist has been verified directly against the codebase:
 - [x] **Listing Lifecycle & Availability**: `listings` with rent-basis CHECK, DRAFT/PUBLISHED/PAUSED lifecycle (RENTED/ARCHIVED deferred to a future lifecycle layer), availability status/date consistency CHECK, and partial-unique active-listing guard `uq_listings_unit_active`.
 - [x] **Normalized Pricing with C1–C10**: `listing_price_components` storing money as `BIGINT` paise with CHECK constraints across charge type, calculation basis, billing frequency, variability, and payment timing.
 - [x] **Photo/Video Media Model**: `listing_photos` with `media_type`, `upload_status`, unique `storage_key`, and the ≥ 3 READY-photo publishing requirement.
-- [x] **Automated Test Coverage**: 183 automated backend Pytest tests covering models, auth, locations, profiles, owner signup, Phase 2B migrations, and Phase 2B models.
+- [x] **Automated Test Coverage**: 316 automated backend Pytest tests covering models, auth, locations, profiles, owner signup, Phase 2B migrations, and Phase 2B models.
 
 ---
 
@@ -1386,7 +1386,7 @@ Every item in this checklist has been verified directly against the codebase:
 
 The following items are **explicitly NOT implemented** in the current codebase:
 
-- [ ] **Owner Listing Creation APIs**: No API endpoints or frontend flows exist to create, edit, or publish properties, rental units, or listings. The Phase 2B database foundation (properties, rental units, listings, pricing, photos, amenities) IS implemented and tested — but the owner CRUD/API layer on top of it is not yet built (Phase 2C onwards). See §14 and §22.
+- [x] **Owner property/unit creation APIs exist** (Phase 2C/2D). The Phase 2B database foundation (properties, rental units, listings, pricing, photos, amenities) IS implemented and tested — but the owner CRUD/API layer on top of it is not yet built (Phase 2C onwards). See §14 and §22.
 - [ ] **Owner Verification Pipeline**: No document upload, KYC, approval, SMS OTP, or phone-verification workflows exist — and none are currently required for lister accounts.
 - [ ] **Owner Property Management Portal**: `/owner/dashboard` exists as an account studio with honest empty states, but no property/listing management functionality exists yet.
 - [ ] **Public Marketplace Search**: No property catalog search, map view, or filter UI exists.

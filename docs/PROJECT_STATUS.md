@@ -8,7 +8,8 @@ Last updated: Phase 4A (Property-Lister Account) completion.
 **Phase 1 — Authentication + Profiles: COMPLETE.**
 **Phase 3B — Renter Experience: COMPLETE.**
 **Phase 4A — Property-Lister Account: COMPLETE.**
-Phase 2 (marketplace: properties, listings, search) has NOT started.
+**Phase 2C — Owner Property APIs: COMPLETE.**
+**Phase 2D — Owner Rental Unit APIs: COMPLETE.**
 
 ## Completed work
 
@@ -18,7 +19,7 @@ Phase 2 (marketplace: properties, listings, search) has NOT started.
   `GET /readyz` (database reachability), SQLAlchemy setup, `locations`,
   `users` (+ `phone_number`), and `user_profiles` tables, Alembic
   migrations `0001`–`0006` (head: `0006`), seed script (Guwahati
-  locations), 125 passing tests.
+  locations), 316 passing tests.
 * Firebase Authentication architecture (Email/Password + Google),
   Firebase Auth Emulator for local development, server-side ID-token
   verification, on-demand user provisioning, `USER` / `OWNER` / `ADMIN`
@@ -40,7 +41,7 @@ Phase 2 (marketplace: properties, listings, search) has NOT started.
 * `python -m app.seed` succeeds (idempotent Guwahati locations).
 * `GET /healthz` returns `{"status":"ok"}`.
 * `GET /readyz` returns `{"status":"ready","db":"up"}`.
-* `pytest -q`: 125 passed.
+* `pytest -q`: 316 passed, 0 failed, 0 skipped.
 * `npm run typecheck`: clean.
 * `npm run build`: succeeds, static pages prerendered (including the
   `/owner/*` routes).
@@ -332,7 +333,7 @@ Current product decision — property-lister accounts do NOT require:
 * SMS OTP
 * phone verification
 
-Owner property creation/listing functionality is NOT yet implemented —
+Owner property and rental unit APIs were implemented in Phase 2C and Phase 2D.
 that is Phase 2 work.
 
 ## Deferred features
