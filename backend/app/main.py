@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from .db import engine
+from .listings import router as listings_router
 from .locations import router as locations_router
 from .owners import router as owners_router
 from .properties import router as properties_router
@@ -15,7 +16,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH"],
+    allow_methods=["GET", "POST", "PUT", "PATCH"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -25,6 +26,7 @@ app.include_router(locations_router)
 app.include_router(properties_router)
 app.include_router(property_units_router)
 app.include_router(units_router)
+app.include_router(listings_router)
 
 
 @app.get("/healthz")
