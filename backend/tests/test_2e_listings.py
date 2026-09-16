@@ -13,6 +13,7 @@ from app.models import (
     Listing,
     ListingPhoto,
     ListingPriceComponent,
+    Location,
     Property,
     RentalUnit,
     RentalUnitAmenity,
@@ -1150,3 +1151,637 @@ def test_photo_confirm_twice_422(client):
         json={"storage_key": key},
     )
     assert second.status_code == 422, second.text
+
+
+# 2E-B HELPERS
+
+
+def insert_area(engine, name):
+    db = sessionmaker(bind=engine)()
+    try:
+        loc = Location(
+            type="area", name=f"2E Test {name} {uuid.uuid4().hex[:6]}",
+            city="Guwahati",
+        )
+        db.add(loc)
+        db.commit()
+        db.refresh(loc)
+        return loc.id
+    finally:
+        db.close()
+
+
+def set_property_area(client, uid, pid, area_id):
+    res = authed(client, uid=uid).patch(
+        f"/api/v1/owner/properties/{pid}",
+        json={"area_location_id": area_id},
+    )
+    assert res.status_code == 200, res.text
+
+
+def blank_property_field(engine, pid, field, value):
+    db = sessionmaker(bind=engine)()
+    try:
+        db.query(Property).filter(Property.id == pid).update({field: value})
+        db.commit()
+    finally:
+        db.close()
+
+
+def add_ready_photo(client, uid, lid, display_order=0, is_cover=False):
+    key = f"t2e-2b-{uuid.uuid4().hex}"
+    init = authed(client, uid=uid).post(
+        f"/api/v1/owner/listings/{lid}/photos:init",
+        json=valid_photo_init(
+            storage_key=key,
+            display_order=display_order,
+            is_cover=is_cover,
+        ),
+    )
+    assert init.status_code == 201, init.text
+    conf = authed(client, uid=uid).post(
+        f"/api/v1/owner/listings/{lid}/photos:confirm",
+        json={"storage_key": key},
+    )
+    assert conf.status_code == 200, conf.text
+    return conf.json()
+
+
+def add_pending_photo(client, uid, lid, display_order=0, is_cover=False):
+    key = f"t2e-2b-{uuid.uuid4().hex}"
+    init = authed(client, uid=uid).post(
+        f"/api/v1/owner/listings/{lid}/photos:init",
+        json=valid_photo_init(
+            storage_key=key,
+            display_order=display_order,
+            is_cover=is_cover,
+        ),
+    )
+    assert init.status_code == 201, init.text
+    return init.json()
+
+
+def seed_rent(client, uid, lid):
+    res = authed(client, uid=uid).put(
+        f"/api/v1/owner/listings/{lid}/price-components",
+        json=[valid_price()],
+    )
+    assert res.status_code == 200, res.text
+
+
+def make_publishable(client, engine, uid):
+    pid = create_property(client, uid)
+    set_property_area(client, uid, pid, insert_area(engine, "area"))
+    unit_id = create_unit(client, uid, pid)
+    created = create_listing(client, uid, unit_id)
+    lid = created["id"]
+    seed_rent(client, uid, lid)
+    for i in range(3):
+        add_ready_photo(client, uid, lid, display_order=i)
+    return pid, lid
+
+
+# 2E-B AUTH
+
+
+def test_publish_pause_unauthenticated_401(client):
+    assert (
+        client.post("/api/v1/owner/listings/1/publish").status_code == 401
+    )
+    assert client.post("/api/v1/owner/listings/1/pause").status_code == 401
+
+
+def test_publish_pause_user_403(client):
+    provision_user(client, USER_UID)
+    assert (
+        authed(client, uid=USER_UID)
+        .post("/api/v1/owner/listings/1/publish")
+        .status_code
+        == 403
+    )
+    assert (
+        authed(client, uid=USER_UID)
+        .post("/api/v1/owner/listings/1/pause")
+        .status_code
+        == 403
+    )
+
+
+def test_publish_pause_admin_403(client, engine):
+    provision_user(client, ADMIN_UID)
+    set_role(engine, ADMIN_UID, "ADMIN")
+    assert (
+        authed(client, uid=ADMIN_UID)
+        .post("/api/v1/owner/listings/1/publish")
+        .status_code
+        == 403
+    )
+    assert (
+        authed(client, uid=ADMIN_UID)
+        .post("/api/v1/owner/listings/1/pause")
+        .status_code
+        == 403
+    )
+
+
+def test_publish_foreign_404(client, engine):
+    provision_owner(client, UID)
+    provision_owner(client, OTHER_UID)
+    _, foreign_lid = make_publishable(client, engine, OTHER_UID)
+    assert (
+        authed(client, uid=UID)
+        .post(f"/api/v1/owner/listings/{foreign_lid}/publish")
+        .status_code
+        == 404
+    )
+    assert (
+        authed(client, uid=UID)
+        .post("/api/v1/owner/listings/999999/publish")
+        .status_code
+        == 404
+    )
+
+
+def test_pause_foreign_404(client, engine):
+    provision_owner(client, UID)
+    provision_owner(client, OTHER_UID)
+    _, foreign_lid = make_publishable(client, engine, OTHER_UID)
+    assert (
+        authed(client, uid=UID)
+        .post(f"/api/v1/owner/listings/{foreign_lid}/pause")
+        .status_code
+        == 404
+    )
+    assert (
+        authed(client, uid=UID)
+        .post("/api/v1/owner/listings/999999/pause")
+        .status_code
+        == 404
+    )
+
+
+# 2E-B PUBLISH
+
+
+def test_publish_happy_path(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/publish"
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["status"] == "PUBLISHED"
+    assert len(data["price_components"]) == 1
+    assert len([p for p in data["photos"] if p["upload_status"] == "READY"]) >= 3
+
+
+def test_publish_from_paused(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    assert (
+        authed(client, uid=UID)
+        .post(f"/api/v1/owner/listings/{lid}/publish")
+        .status_code
+        == 200
+    )
+    assert (
+        authed(client, uid=UID)
+        .post(f"/api/v1/owner/listings/{lid}/pause")
+        .status_code
+        == 200
+    )
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/publish"
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["status"] == "PUBLISHED"
+
+
+def test_publish_fewer_than_3_ready_422(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    set_property_area(client, UID, pid, insert_area(engine, "area"))
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    lid = created["id"]
+    seed_rent(client, UID, lid)
+    add_ready_photo(client, UID, lid, display_order=0)
+    add_ready_photo(client, UID, lid, display_order=1)
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/publish"
+    )
+    assert res.status_code == 422, res.text
+    after = authed(client, uid=UID).get(f"/api/v1/owner/listings/{lid}")
+    assert after.json()["status"] == "DRAFT"
+
+
+def test_publish_no_rent_422(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    authed(client, uid=UID).put(
+        f"/api/v1/owner/listings/{lid}/price-components", json=[]
+    )
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/publish"
+    )
+    assert res.status_code == 422, res.text
+    after = authed(client, uid=UID).get(f"/api/v1/owner/listings/{lid}")
+    assert after.json()["status"] == "DRAFT"
+
+
+def test_publish_missing_area_422(client):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    lid = created["id"]
+    seed_rent(client, UID, lid)
+    for i in range(3):
+        add_ready_photo(client, UID, lid, display_order=i)
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/publish"
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_publish_blank_address_422(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    db = sessionmaker(bind=engine)()
+    try:
+        pid = (
+            db.query(RentalUnit.property_id)
+            .join(Listing, Listing.rental_unit_id == RentalUnit.id)
+            .filter(Listing.id == lid)
+            .scalar()
+        )
+    finally:
+        db.close()
+    blank_property_field(engine, pid, "address_line", "   ")
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/publish"
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_publish_blank_city_422(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    db = sessionmaker(bind=engine)()
+    try:
+        pid = (
+            db.query(RentalUnit.property_id)
+            .join(Listing, Listing.rental_unit_id == RentalUnit.id)
+            .filter(Listing.id == lid)
+            .scalar()
+        )
+    finally:
+        db.close()
+    blank_property_field(engine, pid, "city", "  ")
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/publish"
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_publish_occupied_422(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/availability",
+        json={"availability_status": "OCCUPIED"},
+    )
+    assert res.status_code == 200, res.text
+    pub = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/publish"
+    )
+    assert pub.status_code == 422, pub.text
+
+
+def test_publish_already_published_422(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    assert (
+        authed(client, uid=UID)
+        .post(f"/api/v1/owner/listings/{lid}/publish")
+        .status_code
+        == 200
+    )
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/publish"
+    )
+    assert res.status_code == 422, res.text
+
+
+# 2E-B PHOTO RULES
+
+
+def test_15_total_photos_ok(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    for _ in range(12):
+        add_pending_photo(client, UID, lid)
+    res = authed(client, uid=UID).get(f"/api/v1/owner/listings/{lid}")
+    assert len(res.json()["photos"]) == 15
+
+
+def test_16th_photo_rejected(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    for _ in range(12):
+        add_pending_photo(client, UID, lid)
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/photos:init",
+        json=valid_photo_init(),
+    )
+    assert res.status_code == 422, res.text
+
+
+# 2E-B COVER
+
+
+def test_cover_explicit_single(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    set_property_area(client, UID, pid, insert_area(engine, "area"))
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    lid = created["id"]
+    seed_rent(client, UID, lid)
+    add_ready_photo(client, UID, lid, display_order=0, is_cover=False)
+    add_ready_photo(client, UID, lid, display_order=1, is_cover=False)
+    winner = add_ready_photo(client, UID, lid, display_order=2, is_cover=True)
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/publish"
+    )
+    assert res.status_code == 200, res.text
+    covers = [p for p in res.json()["photos"] if p["is_cover"]]
+    assert len(covers) == 1
+    assert covers[0]["id"] == winner["id"]
+
+
+def test_cover_multiple_lowest_wins(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    set_property_area(client, UID, pid, insert_area(engine, "area"))
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    lid = created["id"]
+    seed_rent(client, UID, lid)
+    add_ready_photo(client, UID, lid, display_order=0, is_cover=False)
+    low = add_ready_photo(client, UID, lid, display_order=1, is_cover=True)
+    add_ready_photo(client, UID, lid, display_order=5, is_cover=True)
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/publish"
+    )
+    assert res.status_code == 200, res.text
+    covers = [p for p in res.json()["photos"] if p["is_cover"]]
+    assert len(covers) == 1
+    assert covers[0]["id"] == low["id"]
+
+
+def test_cover_none_lowest_ready(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    set_property_area(client, UID, pid, insert_area(engine, "area"))
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    lid = created["id"]
+    seed_rent(client, UID, lid)
+    add_ready_photo(client, UID, lid, display_order=2, is_cover=False)
+    add_ready_photo(client, UID, lid, display_order=0, is_cover=False)
+    add_ready_photo(client, UID, lid, display_order=1, is_cover=False)
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/publish"
+    )
+    assert res.status_code == 200, res.text
+    covers = [p for p in res.json()["photos"] if p["is_cover"]]
+    assert len(covers) == 1
+    assert covers[0]["display_order"] == 0
+
+
+def test_cover_pending_ignored(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    set_property_area(client, UID, pid, insert_area(engine, "area"))
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    lid = created["id"]
+    seed_rent(client, UID, lid)
+    first = add_ready_photo(client, UID, lid, display_order=1, is_cover=False)
+    add_ready_photo(client, UID, lid, display_order=2, is_cover=False)
+    add_ready_photo(client, UID, lid, display_order=3, is_cover=False)
+    pending = add_pending_photo(client, UID, lid, display_order=0, is_cover=True)
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/publish"
+    )
+    assert res.status_code == 200, res.text
+    covers = [p for p in res.json()["photos"] if p["is_cover"]]
+    assert len(covers) == 1
+    assert covers[0]["id"] == first["id"]
+    pend = [p for p in res.json()["photos"] if p["id"] == pending["id"]][0]
+    assert pend["is_cover"] is False
+
+
+# 2E-B PAUSE / LIFECYCLE
+
+
+def test_pause_published_to_paused(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    authed(client, uid=UID).post(f"/api/v1/owner/listings/{lid}/publish")
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/pause"
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["status"] == "PAUSED"
+    assert data["title"]
+    assert len(data["price_components"]) == 1
+    assert len(data["photos"]) >= 3
+
+
+def test_pause_draft_422(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/pause"
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_pause_twice_422(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    authed(client, uid=UID).post(f"/api/v1/owner/listings/{lid}/publish")
+    assert (
+        authed(client, uid=UID)
+        .post(f"/api/v1/owner/listings/{lid}/pause")
+        .status_code
+        == 200
+    )
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/pause"
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_lifecycle_full_cycle(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    assert (
+        authed(client, uid=UID)
+        .post(f"/api/v1/owner/listings/{lid}/publish")
+        .json()["status"]
+        == "PUBLISHED"
+    )
+    assert (
+        authed(client, uid=UID)
+        .post(f"/api/v1/owner/listings/{lid}/pause")
+        .json()["status"]
+        == "PAUSED"
+    )
+    assert (
+        authed(client, uid=UID)
+        .post(f"/api/v1/owner/listings/{lid}/publish")
+        .json()["status"]
+        == "PUBLISHED"
+    )
+
+
+# 2E-B OCCUPIED
+
+
+def test_paused_occupied_valid(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    authed(client, uid=UID).post(f"/api/v1/owner/listings/{lid}/publish")
+    authed(client, uid=UID).post(f"/api/v1/owner/listings/{lid}/pause")
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/availability",
+        json={"availability_status": "OCCUPIED"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["availability_status"] == "OCCUPIED"
+    assert res.json()["status"] == "PAUSED"
+
+
+def test_occupied_to_available_paused_ok(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/availability",
+        json={"availability_status": "OCCUPIED"},
+    )
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/availability",
+        json={"availability_status": "AVAILABLE_NOW", "available_from": None},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["availability_status"] == "AVAILABLE_NOW"
+
+
+# 2E-B PRICE C2/C4/C7/C8
+
+
+def test_price_c2_consumption_422(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    bad = valid_price(
+        charge_type="ELECTRICITY",
+        calculation_basis="CONSUMPTION",
+        billing_frequency="MONTHLY",
+        variability="FIXED",
+        amount_paise=1000,
+    )
+    res = authed(client, uid=UID).put(
+        f"/api/v1/owner/listings/{lid}/price-components", json=[bad]
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_price_c4_variable_422(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    bad = valid_price(
+        charge_type="MAINTENANCE",
+        calculation_basis="PER_PERSON",
+        billing_frequency="MONTHLY",
+        variability="VARIABLE",
+        amount_paise=50000,
+        payment_timing="PER_PERIOD",
+    )
+    res = authed(client, uid=UID).put(
+        f"/api/v1/owner/listings/{lid}/price-components", json=[bad]
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_price_c7_one_time_422(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    bad = valid_price(
+        charge_type="MAINTENANCE",
+        calculation_basis="PER_PERSON",
+        billing_frequency="ONE_TIME",
+        variability="FIXED",
+        amount_paise=50000,
+        payment_timing="PER_PERIOD",
+    )
+    res = authed(client, uid=UID).put(
+        f"/api/v1/owner/listings/{lid}/price-components", json=[bad]
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_price_c8_periodic_422(client, engine):
+    provision_owner(client, UID)
+    _, lid = make_publishable(client, engine, UID)
+    bad = valid_price(
+        charge_type="MAINTENANCE",
+        calculation_basis="PER_PERSON",
+        billing_frequency="MONTHLY",
+        variability="FIXED",
+        amount_paise=None,
+        rate_paise_per_unit=50,
+        payment_timing="PER_PERIOD",
+    )
+    res = authed(client, uid=UID).put(
+        f"/api/v1/owner/listings/{lid}/price-components", json=[bad]
+    )
+    assert res.status_code == 422, res.text
+
+
+# 2E-B PHOTO CONFIRM METADATA
+
+
+def test_photo_confirm_metadata_persists(client):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    key = f"t2e-meta-{uuid.uuid4().hex}"
+    authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{created['id']}/photos:init",
+        json=valid_photo_init(storage_key=key),
+    )
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{created['id']}/photos:confirm",
+        json={
+            "storage_key": key,
+            "mime": "image/png",
+            "width": 800,
+            "height": 600,
+            "display_order": 4,
+            "is_cover": True,
+        },
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["mime"] == "image/png"
+    assert data["width"] == 800
+    assert data["height"] == 600
+    assert data["display_order"] == 4
+    assert data["is_cover"] is True
+    assert data["upload_status"] == "READY"

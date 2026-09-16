@@ -684,6 +684,20 @@ def init_listing_photo(
     provided.setdefault("media_type", "PHOTO")
     provided.setdefault("display_order", 0)
     provided.setdefault("is_cover", False)
+    total_photos = (
+        db.execute(
+            select(ListingPhoto.id).where(
+                ListingPhoto.listing_id == listing.id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if len(total_photos) >= 15:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="maximum 15 photos per listing",
+        )
     existing = (
         db.execute(
             select(ListingPhoto).where(
@@ -765,3 +779,103 @@ def confirm_listing_photo(
         )
     db.refresh(photo)
     return photo
+
+
+def _normalize_cover(listing: Listing) -> None:
+    ready = [p for p in listing.photos if p.upload_status == "READY"]
+    if not ready:
+        return
+    explicit = [p for p in ready if p.is_cover]
+    if explicit:
+        winner = min(explicit, key=lambda p: (p.display_order, p.id))
+    else:
+        winner = min(ready, key=lambda p: (p.display_order, p.id))
+    for p in listing.photos:
+        p.is_cover = p.id == winner.id
+
+
+def _check_publication_guards(db: Session, listing: Listing) -> None:
+    ready_count = sum(
+        1 for p in listing.photos if p.upload_status == "READY"
+    )
+    if ready_count < 3:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="at least 3 READY photos are required for publication",
+        )
+    if not any(c.charge_type == "RENT" for c in listing.price_components):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="at least one RENT price component is required for publication",
+        )
+    prop = db.get(Property, listing.rental_unit.property_id)
+    if (
+        prop is None
+        or not (prop.address_line or "").strip()
+        or not (prop.city or "").strip()
+        or prop.area_location_id is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="property address, city and area are required for publication",
+        )
+    if listing.availability_status == "OCCUPIED":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="OCCUPIED listings cannot be published",
+        )
+
+
+@router.post("/{listing_id}/publish", response_model=ListingRead)
+def publish_listing(
+    listing_id: int,
+    user: User = Depends(require_role("OWNER")),
+    db: Session = Depends(get_db),
+):
+    listing = _owned_listing_or_404(db, listing_id, user.id)
+    if listing.status == "PUBLISHED":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="listing is already PUBLISHED",
+        )
+    if listing.status not in ("DRAFT", "PAUSED"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="only DRAFT or PAUSED listings can be published",
+        )
+    _check_publication_guards(db, listing)
+    _normalize_cover(listing)
+    listing.status = "PUBLISHED"
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="listing data violates database constraints",
+        )
+    return _sort_nested(_owned_listing_or_404(db, listing.id, user.id))
+
+
+@router.post("/{listing_id}/pause", response_model=ListingRead)
+def pause_listing(
+    listing_id: int,
+    user: User = Depends(require_role("OWNER")),
+    db: Session = Depends(get_db),
+):
+    listing = _owned_listing_or_404(db, listing_id, user.id)
+    if listing.status != "PUBLISHED":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="only PUBLISHED listings can be paused",
+        )
+    listing.status = "PAUSED"
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="listing data violates database constraints",
+        )
+    return _sort_nested(_owned_listing_or_404(db, listing.id, user.id))
