@@ -235,6 +235,7 @@ def test_create_response_shape(client, engine):
         "city",
         "pincode",
         "gate_closing_time",
+        "has_curfew",
         "is_independent",
         "latitude",
         "longitude",

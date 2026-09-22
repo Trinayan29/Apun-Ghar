@@ -25,13 +25,14 @@ EXPECTED_TABLES = {
     "properties": [
         "id", "owner_user_id", "property_type", "address_line", "locality",
         "area_location_id", "city", "pincode", "gate_closing_time",
-        "is_independent", "latitude", "longitude", "nearest_college_id",
-        "nearest_workplace_id", "total_floors", "built_year", "created_at",
-        "updated_at",
+        "has_curfew", "is_independent", "latitude", "longitude",
+        "nearest_college_id", "nearest_workplace_id", "total_floors",
+        "built_year", "created_at", "updated_at",
     ],
     "rental_units": [
         "id", "property_id", "unit_type", "occupancy_type", "capacity",
-        "sharing", "furnishing", "gender_scope", "bathrooms", "floor_number",
+        "sharing", "layout", "is_independent", "food_status", "furnishing",
+        "gender_scope", "bathrooms", "floor_number",
         "carpet_area_sqft", "couple_friendly", "visitors_allowed",
         "pets_allowed", "smoking_allowed", "alcohol_allowed", "house_rules",
         "created_at", "updated_at",
@@ -147,10 +148,10 @@ def _amenity_count(url: str) -> int:
         engine.dispose()
 
 
-def test_single_head_and_upgrade_reaches_0012(test_db_url):
-    assert _heads(test_db_url) == {"0012"}
+def test_single_head_and_upgrade_reaches_0015(test_db_url):
+    assert _heads(test_db_url) == {"0015"}
     upgrade_head(test_db_url)
-    assert _version(test_db_url) == ["0012"]
+    assert _version(test_db_url) == ["0015"]
 
 
 def test_all_tables_and_columns_exist_at_head(test_db_url):
@@ -183,7 +184,7 @@ def test_round_trip_downgrade_to_0006_and_upgrade(test_db_url):
     for table in EXPECTED_TABLES:
         assert table not in tables, f"table {table} should be gone at 0006"
     upgrade_head(test_db_url)
-    assert _version(test_db_url) == ["0012"]
+    assert _version(test_db_url) == ["0015"]
 
 
 def test_seed_script_idempotent(test_db_url):

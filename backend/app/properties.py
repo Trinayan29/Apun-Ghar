@@ -36,6 +36,7 @@ class PropertyCreate(BaseModel):
         "HOSTEL",
         "APARTMENT_FLAT",
         "INDEPENDENT_HOUSE",
+        "ASSAM_TYPE_HOUSE",
         "STUDIO_BUILDING",
         "OTHER",
     ]
@@ -45,6 +46,7 @@ class PropertyCreate(BaseModel):
     city: str | None = Field(default=None, max_length=100)
     pincode: str | None = Field(default=None, pattern=PINCODE_RE)
     gate_closing_time: time | None = None
+    has_curfew: bool | None = None
     is_independent: bool | None = None
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
@@ -77,6 +79,7 @@ class PropertyUpdate(BaseModel):
         "HOSTEL",
         "APARTMENT_FLAT",
         "INDEPENDENT_HOUSE",
+        "ASSAM_TYPE_HOUSE",
         "STUDIO_BUILDING",
         "OTHER",
     ] | None = None
@@ -86,6 +89,7 @@ class PropertyUpdate(BaseModel):
     city: str | None = Field(default=None, max_length=100)
     pincode: str | None = Field(default=None, pattern=PINCODE_RE)
     gate_closing_time: time | None = None
+    has_curfew: bool | None = None
     is_independent: bool | None = None
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
@@ -125,6 +129,7 @@ class PropertyRead(BaseModel):
     city: str
     pincode: str | None
     gate_closing_time: time | None
+    has_curfew: bool | None
     is_independent: bool | None
     latitude: float | None
     longitude: float | None
@@ -153,6 +158,16 @@ def _ensure_not_null_fields(provided: dict) -> None:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"{field} cannot be null",
             )
+
+
+def _validate_curfew(
+    has_curfew: bool | None, gate_closing_time: time | None
+) -> None:
+    if has_curfew is False and gate_closing_time is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="gate_closing_time must be null when has_curfew is false",
+        )
 
 
 def _validate_location_refs(db: Session, provided: dict) -> None:
@@ -192,6 +207,9 @@ def create_property(
     _ensure_not_null_fields(provided)
     _validate_geo(provided.get("latitude"), provided.get("longitude"))
     _validate_location_refs(db, provided)
+    _validate_curfew(
+        provided.get("has_curfew"), provided.get("gate_closing_time")
+    )
     prop = Property(owner_user_id=user.id, **provided)
     db.add(prop)
     try:
@@ -243,6 +261,10 @@ def update_owner_property(
     provided = payload.model_dump(exclude_unset=True)
     _ensure_not_null_fields(provided)
     _validate_location_refs(db, provided)
+    _validate_curfew(
+        provided.get("has_curfew", prop.has_curfew),
+        provided.get("gate_closing_time", prop.gate_closing_time),
+    )
     _validate_geo(
         provided.get("latitude", prop.latitude),
         provided.get("longitude", prop.longitude),

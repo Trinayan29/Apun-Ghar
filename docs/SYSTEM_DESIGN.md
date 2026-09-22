@@ -154,7 +154,7 @@ flowchart TB
 | Path | Responsibility |
 |---|---|
 | `frontend/` | Production Next.js 16 + React 19 + TS + Tailwind v4 app (`rent-frontend`). Renter onboarding/profile + owner account flows |
-| `backend/` | FastAPI modular monolith (`app/`), Alembic migrations (`alembic/versions/0001–0012`), pytest suite (`tests/`, 13 files), `requirements.txt` |
+| `backend/` | FastAPI modular monolith (`app/`), Alembic migrations (`alembic/versions/0001–0015`), pytest suite (`tests/`, 13 files), `requirements.txt` |
 | `design-prototype/` | Separate Next.js app: renter mock flows + rebuilt owner listing UX. Zero backend calls |
 | `docs/` | `PROJECT_STATUS.md`, `PROJECT_TECHNICAL_KNOWLEDGE.md`, `PHASE_2A_PROPERTY_LISTING_DESIGN.md`, `supply-strategy.md`, `CONTRIBUTING.md`, this file |
 | `docker-compose.yml` | PostgreSQL 17 container only (`5433:5432`, `pgdata` volume) |
@@ -221,8 +221,9 @@ handler, no unit-of-work abstraction.
 **Testing:** pytest + httpx `TestClient(raise_server_exceptions=False)`,
 per-file fixtures overriding `get_firebase_claims` with canned claims,
 module-scoped engine fixtures that **skip** when PostgreSQL is
-unreachable. 13 test files: model/migration/auth/cors/health/
-locations/owners/users/profile/2C-properties/2D-units/2E-listings.
+unreachable. 14 test files: model/migration/auth/cors/health/
+locations/owners/users/profile/2C-properties/2D-units/2E-listings/2F-domain
+(425 passed at Phase 2F).
 
 ---
 
@@ -364,7 +365,7 @@ not found"`), so existence is never leaked. Uniqueness conflicts →
 
 ## 8. Database system design
 
-PostgreSQL 17, migrations `0001–0012` (single linear chain), all
+PostgreSQL 17, migrations `0001–0015` (single linear chain), all
 tables use integer surrogate PKs.
 
 ```mermaid
@@ -387,10 +388,10 @@ erDiagram
 | `users` | Identity. `firebase_uid` UNIQUE, `email` UNIQUE nullable, `role ∈ {USER,OWNER,ADMIN}` CHECK, `display_name`, `phone_number`. `email_verified` synced from Firebase |
 | `user_profiles` | Renter prefs. PK = `user_id` FK CASCADE. `budget_min/max ≥ 0`, `max ≥ min` CHECKs; college/workplace FKs RESTRICT |
 | `amenities` | Catalog, 13 rows seeded in migration `0007` (slug UNIQUE, e.g. `wifi`, `power-backup`, `cctv` + label/category). `is_active` soft-kill switch; `RESTRICT` prevents deleting in-use amenities |
-| `properties` | Physical place. `owner_user_id` RESTRICT (can't delete owners with property); `property_type ∈ {PG,HOSTEL,APARTMENT_FLAT,INDEPENDENT_HOUSE,STUDIO_BUILDING,OTHER}`; `address_line TEXT`, `city` default Guwahati, pincode, `area_location_id` + college/workplace FKs RESTRICT; lat/lng range + both-or-neither CHECKs; indexes on owner/area/(city,area) |
-| `rental_units` | Rentable space. `property_id` CASCADE; `unit_type` (6 values), `occupancy_type` (SINGLE…QUAD_PLUS), `capacity > 0`, `sharing`, `furnishing`, `gender_scope` (default ANY); **occupancy consistency triple**: `SINGLE ⇒ capacity=1 ∧ PRIVATE`, `SHARED ⇒ capacity≥2`, `PRIVATE ⇒ capacity=1`; 5 nullable tri-state policy booleans (partial indexes); `house_rules TEXT` |
+| `properties` | Physical place. `owner_user_id` RESTRICT (can't delete owners with property); `property_type ∈ {PG,HOSTEL,APARTMENT_FLAT,INDEPENDENT_HOUSE,ASSAM_TYPE_HOUSE,STUDIO_BUILDING,OTHER}`; `address_line TEXT`, `city` default Guwahati, pincode, `area_location_id` + college/workplace FKs RESTRICT; `has_curfew BOOLEAN NULL` (NULL=unspecified) alongside `gate_closing_time`; lat/lng range + both-or-neither CHECKs; indexes on owner/area/(city,area) |
+| `rental_units` | Rentable space. `property_id` CASCADE; `unit_type` (6 values), `occupancy_type` (SINGLE…QUAD_PLUS, NULL = not applicable for whole homes), `capacity`/`sharing` NULLable (NULL = not applicable); `layout ∈ {1 RK,1 BHK,2 BHK,3 BHK,4 BHK+} NULL`; `is_independent BOOLEAN NULL`; `food_status ∈ {INCLUDED,SEPARATE,NONE} NULL`; `furnishing`, `gender_scope` (default ANY); **occupancy consistency triple** (NULL-tolerant at DB level; required-for-rooms enforced by API): `SINGLE ⇒ capacity=1 ∧ PRIVATE`, `SHARED ⇒ capacity≥2`, `PRIVATE ⇒ capacity=1`; plus `ck_units_layout_scope` (layout only with whole-home/OTHER types) and `ck_units_capacity_required` (capacity+sharing set, or layout set, or whole-home/OTHER type); 5 nullable tri-state policy booleans (partial indexes); `house_rules TEXT` |
 | `rental_unit_amenities` | M2M join, composite PK, index `(amenity_id, rental_unit_id)` |
-| `listings` | Commercial offer. `rental_unit_id` CASCADE; `title TEXT` (**nullable in DB** — API enforces required); `rent_basis ∈ {PER_PERSON,PER_ROOM,PER_UNIT}`; `status ∈ {DRAFT,PUBLISHED,PAUSED,RENTED,ARCHIVED}` — **RENTED/ARCHIVED exist in the CHECK but no API exposes them**; `availability_status` enum + `AVAILABLE_FROM_DATE ⇔ available_from NOT NULL` CHECK; **partial unique** `uq_listings_unit_active (rental_unit_id) WHERE status IN (DRAFT,PUBLISHED,PAUSED)` = one active listing per unit |
+| `listings` | Commercial offer. `rental_unit_id` CASCADE; `title TEXT NOT NULL` (hardened in migration `0014` after a zero-NULL audit); `rent_basis ∈ {PER_PERSON,PER_ROOM,PER_UNIT}`; `status ∈ {DRAFT,PUBLISHED,PAUSED,RENTED,ARCHIVED}` — **RENTED/ARCHIVED exist in the CHECK but no API exposes them**; `availability_status` enum + `AVAILABLE_FROM_DATE ⇔ available_from NOT NULL` CHECK; **partial unique** `uq_listings_unit_active (rental_unit_id) WHERE status IN (DRAFT,PUBLISHED,PAUSED)` = one active listing per unit |
 | `listing_price_components` | Price rows. `listing_id` CASCADE; enums for charge/calculation/frequency/variability/timing; `amount_paise/rate_paise_per_unit BIGINT ≥ 0`; **C1–C10 CHECKs** (XOR, CONSUMPTION, DEPOSIT, RENT, ONE_TIME, periodic-FIXED, OTHER⇔label); **C10 unique** `(listing_id, charge_type, calculation_basis, billing_frequency)`; indexes on listing + flags |
 | `listing_photos` | Photo metadata. `listing_id` CASCADE; `storage_key TEXT UNIQUE` (global); `mime`, `width/height > 0`, `display_order ≥ 0`, `is_cover`, `upload_status ∈ {PENDING,READY,FAILED}`, `media_type ∈ {PHOTO,VIDEO}`; index `(listing_id, display_order)`. **No count CHECKs** (3-min/15-max are app rules) |
 
@@ -846,9 +847,9 @@ the two health endpoints.
 
 | Severity | Problem | Evidence | Impact → Direction |
 |---|---|---|---|
-| HIGH | `README.md` + `docs/PROJECT_STATUS.md` are stale (claim Phase 2 unstarted, 316 tests, head `0006`) | README:30-32,44,215; actual head `0012`, phases 2C–2E committed | New joiners misled → refresh these docs from this design doc |
+| HIGH | `README.md` is stale (claims Phase 2 unstarted, 316 tests, head `0006`) | README:30-32,44,215; actual head `0015`, phases 2C–2F committed | New joiners misled → refresh from this design doc (`PROJECT_STATUS.md` reconciled at Phase 2F) |
 | MEDIUM | `ADMIN` role is dead (in CHECK, zero routes) | grep: no `require_role("ADMIN")` in `app/` | Confusion + future 500s if assumed → either wire admin routes or document as reserved |
-| MEDIUM | `Listing.title` DB-nullable (API enforces required) | `models.py:373` vs `listings.py` validation | Legacy weakness → add `nullable=False` migration in a hardening phase |
+| INFO | `Listing.title` hardened to NOT NULL in migration `0014` (zero-NULL audit) | `models.py` + `0014` guard | Resolved in Phase 2F; was a legacy weakness |
 | MEDIUM | No public read API: `PUBLISHED` has no consumer | No `GET /listings` public route | Supply side is complete but unrenterable → next backend phase is public search/detail |
 | MEDIUM | Photo 15-max has a TOCTOU race (count-then-insert) | `listings.py:687-700` | Concurrent inits could exceed 15 → DB-level guard in hardening phase |
 | LOW | Broad `IntegrityError` message sniffing (photo keys) | `listings.py:726` (`"unique" in msg.lower()`) | Possible misclassification → match constraint names |

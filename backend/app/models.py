@@ -125,7 +125,8 @@ class Property(Base):
     __table_args__ = (
         CheckConstraint(
             "property_type IN ('PG', 'HOSTEL', 'APARTMENT_FLAT', "
-            "'INDEPENDENT_HOUSE', 'STUDIO_BUILDING', 'OTHER')",
+            "'INDEPENDENT_HOUSE', 'ASSAM_TYPE_HOUSE', 'STUDIO_BUILDING', "
+            "'OTHER')",
             name="ck_properties_type",
         ),
         CheckConstraint(
@@ -167,6 +168,7 @@ class Property(Base):
     city: Mapped[str] = mapped_column(String(100), default="Guwahati")
     pincode: Mapped[str | None] = mapped_column(String(10))
     gate_closing_time: Mapped[time | None] = mapped_column(Time)
+    has_curfew: Mapped[bool | None] = mapped_column(Boolean)
     is_independent: Mapped[bool | None] = mapped_column(Boolean)
     latitude: Mapped[float | None] = mapped_column(Float)
     longitude: Mapped[float | None] = mapped_column(Float)
@@ -237,6 +239,27 @@ class RentalUnit(Base):
             name="ck_units_private_consistent",
         ),
         CheckConstraint(
+            "layout IS NULL OR layout IN ('1 RK', '1 BHK', '2 BHK', "
+            "'3 BHK', '4 BHK+')",
+            name="ck_units_layout",
+        ),
+        CheckConstraint(
+            "food_status IS NULL OR food_status IN ('INCLUDED', "
+            "'SEPARATE', 'NONE')",
+            name="ck_units_food_status",
+        ),
+        CheckConstraint(
+            "(layout IS NULL) OR "
+            "(unit_type IN ('ENTIRE_FLAT', 'ENTIRE_STUDIO', 'OTHER'))",
+            name="ck_units_layout_scope",
+        ),
+        CheckConstraint(
+            "((capacity IS NOT NULL) AND (sharing IS NOT NULL)) OR "
+            "(layout IS NOT NULL) OR "
+            "(unit_type IN ('ENTIRE_FLAT', 'ENTIRE_STUDIO', 'OTHER'))",
+            name="ck_units_capacity_required",
+        ),
+        CheckConstraint(
             "bathrooms IS NULL OR bathrooms >= 0", name="ck_units_bathrooms"
         ),
         CheckConstraint(
@@ -282,9 +305,12 @@ class RentalUnit(Base):
         ForeignKey("properties.id", ondelete="CASCADE")
     )
     unit_type: Mapped[str] = mapped_column(String(30))
-    occupancy_type: Mapped[str] = mapped_column(String(20))
-    capacity: Mapped[int]
-    sharing: Mapped[str] = mapped_column(String(20))
+    occupancy_type: Mapped[str | None] = mapped_column(String(20))
+    capacity: Mapped[int | None]
+    sharing: Mapped[str | None] = mapped_column(String(20))
+    layout: Mapped[str | None] = mapped_column(String(20))
+    is_independent: Mapped[bool | None] = mapped_column(Boolean)
+    food_status: Mapped[str | None] = mapped_column(String(20))
     furnishing: Mapped[str] = mapped_column(String(20))
     gender_scope: Mapped[str] = mapped_column(String(20), default="ANY")
     bathrooms: Mapped[int | None]
@@ -370,7 +396,7 @@ class Listing(Base):
     rental_unit_id: Mapped[int] = mapped_column(
         ForeignKey("rental_units.id", ondelete="CASCADE")
     )
-    title: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     rent_basis: Mapped[str] = mapped_column(String(20))
     status: Mapped[str] = mapped_column(String(20), default="DRAFT")

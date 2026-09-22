@@ -18,11 +18,20 @@ units_router = APIRouter(prefix="/api/v1/owner/units", tags=["owner-rental-units
 
 NOT_NULL_FIELDS = (
     "unit_type",
+    "furnishing",
+    "gender_scope",
+)
+
+ROOM_UNIT_TYPES = ("PRIVATE_ROOM", "SHARED_ROOM_BED", "PG_BED")
+WHOLE_UNIT_TYPES = ("ENTIRE_FLAT", "ENTIRE_STUDIO")
+LAYOUT_VALUES = ("1 RK", "1 BHK", "2 BHK", "3 BHK", "4 BHK+")
+FOOD_VALUES = ("INCLUDED", "SEPARATE", "NONE")
+COMPOSITION_FIELDS = (
+    "unit_type",
     "occupancy_type",
     "capacity",
     "sharing",
-    "furnishing",
-    "gender_scope",
+    "layout",
 )
 
 
@@ -48,9 +57,14 @@ class RentalUnitCreate(BaseModel):
         "PG_BED",
         "OTHER",
     ]
-    occupancy_type: Literal["SINGLE", "DOUBLE", "TRIPLE", "QUAD_PLUS"]
-    capacity: int = Field(ge=1)
-    sharing: Literal["PRIVATE", "SHARED"]
+    occupancy_type: Literal["SINGLE", "DOUBLE", "TRIPLE", "QUAD_PLUS"] | None = (
+        None
+    )
+    capacity: int | None = Field(default=None, ge=1)
+    sharing: Literal["PRIVATE", "SHARED"] | None = None
+    layout: Literal["1 RK", "1 BHK", "2 BHK", "3 BHK", "4 BHK+"] | None = None
+    is_independent: bool | None = None
+    food_status: Literal["INCLUDED", "SEPARATE", "NONE"] | None = None
     furnishing: Literal["UNFURNISHED", "SEMI_FURNISHED", "FURNISHED"]
     gender_scope: Literal["ANY", "MALE", "FEMALE"] = "ANY"
     bathrooms: int | None = Field(default=None, ge=0)
@@ -94,6 +108,9 @@ class RentalUnitUpdate(BaseModel):
     )
     capacity: int | None = Field(default=None, ge=1)
     sharing: Literal["PRIVATE", "SHARED"] | None = None
+    layout: Literal["1 RK", "1 BHK", "2 BHK", "3 BHK", "4 BHK+"] | None = None
+    is_independent: bool | None = None
+    food_status: Literal["INCLUDED", "SEPARATE", "NONE"] | None = None
     furnishing: Literal["UNFURNISHED", "SEMI_FURNISHED", "FURNISHED"] | None = (
         None
     )
@@ -126,9 +143,12 @@ class RentalUnitRead(BaseModel):
     id: int
     property_id: int
     unit_type: str
-    occupancy_type: str
-    capacity: int
-    sharing: str
+    occupancy_type: str | None
+    capacity: int | None
+    sharing: str | None
+    layout: str | None
+    is_independent: bool | None
+    food_status: str | None
     furnishing: str
     gender_scope: str
     bathrooms: int | None
@@ -174,6 +194,75 @@ def _validate_occupancy(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="PRIVATE units require capacity of 1",
         )
+
+
+def _unprocessable(detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=detail,
+    )
+
+
+def _validate_composition(
+    unit_type: str,
+    occupancy_type: str | None,
+    capacity: int | None,
+    sharing: str | None,
+    layout: str | None,
+) -> None:
+    """Room/bed units require capacity+sharing (+occupancy) with the
+    existing occupancy invariants. Whole-home units (layout set, or
+    ENTIRE_FLAT/ENTIRE_STUDIO type) must use NULL capacity/sharing/
+    occupancy — NULL means "not applicable". OTHER allows both-or-neither
+    (with invariants when values are present)."""
+    if layout is not None:
+        if unit_type not in (*WHOLE_UNIT_TYPES, "OTHER"):
+            raise _unprocessable(
+                "layout is only valid for whole-home units"
+            )
+        if (
+            capacity is not None
+            or sharing is not None
+            or occupancy_type is not None
+        ):
+            raise _unprocessable(
+                "whole-home units use layout instead of "
+                "occupancy/capacity/sharing (use null)"
+            )
+        return
+    if unit_type in WHOLE_UNIT_TYPES:
+        if (
+            capacity is not None
+            or sharing is not None
+            or occupancy_type is not None
+        ):
+            raise _unprocessable(
+                "whole-home units use layout instead of "
+                "occupancy/capacity/sharing (use null)"
+            )
+        return
+    if unit_type == "OTHER":
+        if (capacity is None) != (sharing is None):
+            raise _unprocessable(
+                "capacity and sharing must both be set or both be null"
+            )
+        if capacity is not None:
+            if occupancy_type is None:
+                raise _unprocessable(
+                    "occupancy_type is required when capacity is set"
+                )
+            _validate_occupancy(occupancy_type, capacity, sharing)
+        elif occupancy_type is not None:
+            raise _unprocessable(
+                "occupancy_type requires capacity and sharing to be set"
+            )
+        return
+    if occupancy_type is None or capacity is None or sharing is None:
+        raise _unprocessable(
+            "occupancy_type, capacity and sharing are required "
+            "for room/bed units"
+        )
+    _validate_occupancy(occupancy_type, capacity, sharing)
 
 
 def _resolve_amenities(db: Session, amenity_ids: list[int]) -> list[Amenity]:
@@ -250,10 +339,12 @@ def create_rental_unit(
     prop = _owned_property_or_404(db, property_id, user.id)
     provided = payload.model_dump(exclude_unset=True)
     _ensure_not_null_fields(provided)
-    _validate_occupancy(
-        provided["occupancy_type"],
-        provided["capacity"],
-        provided["sharing"],
+    _validate_composition(
+        provided["unit_type"],
+        provided.get("occupancy_type"),
+        provided.get("capacity"),
+        provided.get("sharing"),
+        provided.get("layout"),
     )
     amenity_ids = provided.pop("amenity_ids", None)
     amenities = (
@@ -321,11 +412,17 @@ def update_rental_unit(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="amenity_ids cannot be null; use [] to clear all amenities",
         )
-    _validate_occupancy(
-        provided.get("occupancy_type", unit.occupancy_type),
-        provided.get("capacity", unit.capacity),
-        provided.get("sharing", unit.sharing),
-    )
+    if any(key in provided for key in COMPOSITION_FIELDS):
+        # Strict composition rules on the merged values whenever the
+        # caller touches occupancy/capacity/sharing/layout/unit_type.
+        # Untouched legacy rows keep working without modification.
+        _validate_composition(
+            provided.get("unit_type", unit.unit_type),
+            provided.get("occupancy_type", unit.occupancy_type),
+            provided.get("capacity", unit.capacity),
+            provided.get("sharing", unit.sharing),
+            provided.get("layout", unit.layout),
+        )
     amenity_ids = provided.pop("amenity_ids", None)
     new_amenities = (
         _resolve_amenities(db, amenity_ids) if amenity_ids is not None else None

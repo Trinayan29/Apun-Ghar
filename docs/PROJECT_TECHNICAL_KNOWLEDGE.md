@@ -584,13 +584,14 @@ The canonical catalog of physical facilities, normalized so any rental unit refe
 A physical real estate asset (a building, hostel floor, or independent residence) owned by exactly one owner account.
 - **`id`** (`INTEGER`, PK): Unique property identifier.
 - **`owner_user_id`** (`INTEGER`, FK `users.id` `ON DELETE RESTRICT`, NOT NULL): Single ownership anchor — one property, one owner.
-- **`property_type`** (`VARCHAR(30)`, NOT NULL): Constrained by `ck_properties_type` to `PG`, `HOSTEL`, `APARTMENT_FLAT`, `INDEPENDENT_HOUSE`, `STUDIO_BUILDING`, or `OTHER`.
+- **`property_type`** (`VARCHAR(30)`, NOT NULL): Constrained by `ck_properties_type` to `PG`, `HOSTEL`, `APARTMENT_FLAT`, `INDEPENDENT_HOUSE`, `ASSAM_TYPE_HOUSE` (since `0014`), `STUDIO_BUILDING`, or `OTHER`. Owner-facing "Room in a house" maps internally to `INDEPENDENT_HOUSE`; "Assam-type house" maps to `ASSAM_TYPE_HOUSE`.
 - **`address_line`** (`TEXT`, NOT NULL): Street-level address.
 - **`locality`** (`TEXT`, Nullable): Informal sub-area / landmark text.
 - **`area_location_id`** (`INTEGER`, FK `locations.id` `ON DELETE RESTRICT`, Nullable): Canonical neighborhood anchor.
 - **`city`** (`VARCHAR(100)`, NOT NULL, Server Default `'Guwahati'`).
 - **`pincode`** (`VARCHAR(10)`, Nullable).
-- **`gate_closing_time`** (`TIME`, Nullable): Night security gate timing. `NULL` means *unspecified*, not "no curfew".
+- **`gate_closing_time`** (`TIME`, Nullable): Night security gate timing. Interpret with `has_curfew` below.
+- **`has_curfew`** (`BOOLEAN`, Nullable, since `0014`): `TRUE` = curfew/gate rule exists (pair with a time), `FALSE` = no curfew (pair with `NULL` time — enforced by the API), `NULL` = unspecified.
 - **`is_independent`** (`BOOLEAN`, Nullable): `TRUE` = self-contained independent unit, `FALSE` = shared building, `NULL` = unknown/undisclosed.
 - **`latitude`** / **`longitude`** (`FLOAT`, Nullable): Constrained by `ck_properties_lat_range`, `ck_properties_lng_range`, and `ck_properties_geo_both_or_neither` (both present or both `NULL`).
 - **`nearest_college_id`** / **`nearest_workplace_id`** (`INTEGER`, FK `locations.id` `ON DELETE RESTRICT`, Nullable): Canonical anchors for distance-based matching.
@@ -603,9 +604,12 @@ A rentable unit inside a property (a private room, a bed in a shared room, or an
 - **`id`** (`INTEGER`, PK): Unique rental unit identifier.
 - **`property_id`** (`INTEGER`, FK `properties.id` `ON DELETE CASCADE`, NOT NULL): Offer-scoped delete — removing the property removes its units.
 - **`unit_type`** (`VARCHAR(30)`, NOT NULL): `ck_units_type` → `PRIVATE_ROOM`, `SHARED_ROOM_BED`, `ENTIRE_FLAT`, `ENTIRE_STUDIO`, `PG_BED`, `OTHER`.
-- **`occupancy_type`** (`VARCHAR(20)`, NOT NULL): `ck_units_occupancy` → `SINGLE`, `DOUBLE`, `TRIPLE`, `QUAD_PLUS`.
-- **`capacity`** (`INTEGER`, NOT NULL, `> 0`): Number of occupants the unit can monetize.
-- **`sharing`** (`VARCHAR(20)`, NOT NULL): `PRIVATE` or `SHARED`. Consistency CHECKs: `SINGLE` ⇒ `capacity = 1 AND sharing = 'PRIVATE'`; `SHARED` ⇒ `capacity >= 2`; `PRIVATE` ⇒ `capacity = 1`.
+- **`occupancy_type`** (`VARCHAR(20)`, Nullable since `0015`; NULL = not applicable for whole-home units): `ck_units_occupancy` → `SINGLE`, `DOUBLE`, `TRIPLE`, `QUAD_PLUS`.
+- **`capacity`** (`INTEGER`, Nullable since `0015`, `> 0` when set): Number of occupants the unit can monetize; NULL = not applicable for whole-home units.
+- **`sharing`** (`VARCHAR(20)`, Nullable since `0015`): `PRIVATE` or `SHARED`; NULL = not applicable for whole-home units. Consistency CHECKs (NULL-tolerant at DB level; required-for-rooms enforced by the API): `SINGLE` ⇒ `capacity = 1 AND sharing = 'PRIVATE'`; `SHARED` ⇒ `capacity >= 2`; `PRIVATE` ⇒ `capacity = 1`. Scope guards: `ck_units_layout_scope` (layout only with whole-home/`OTHER` types) and `ck_units_capacity_required` (capacity+sharing set, or layout set, or whole-home/`OTHER` type).
+- **`layout`** (`VARCHAR(20)`, Nullable, since `0013`): whole-home layout → `1 RK`, `1 BHK`, `2 BHK`, `3 BHK`, `4 BHK+` (`ck_units_layout`); NULL = not applicable. Never mixed into `unit_type`.
+- **`is_independent`** (`BOOLEAN`, Nullable, since `0013`): unit-level private entrance/no shared living spaces; NULL = unspecified. Distinct from building-level `properties.is_independent`, which is unchanged.
+- **`food_status`** (`VARCHAR(20)`, Nullable, since `0013`): `INCLUDED`, `SEPARATE`, `NONE` (`ck_units_food_status`); NULL = unspecified. Fact only — money stays in `FOOD` price components.
 - **`furnishing`** (`VARCHAR(20)`, NOT NULL): `UNFURNISHED`, `SEMI_FURNISHED`, or `FURNISHED`.
 - **`gender_scope`** (`VARCHAR(20)`, Server Default `'ANY'`): `ck_units_gender_scope` → `ANY`, `MALE`, `FEMALE`.
 - **`bathrooms`** (>= 0), **`floor_number`** (>= 0), **`carpet_area_sqft`** (> 0) — all nullable.
@@ -1142,7 +1146,16 @@ Database migrations are strictly version-controlled using Alembic under `backend
 0011_create_listing_price_components.py (2026-09-15)
   │
   ▼
-0012_create_listing_photos.py (2026-09-15) [HEAD]
+0012_create_listing_photos.py (2026-09-15)
+  │
+  ▼
+0013_rental_unit_listing_attributes.py (2026-09-22)
+  │
+  ▼
+0014_property_enums_and_flags.py (2026-09-22)
+  │
+  ▼
+0015_capacity_sharing_nullable.py (2026-09-22) [HEAD]
 ```
 
 ### Detailed Migrations Log
@@ -1161,6 +1174,9 @@ Database migrations are strictly version-controlled using Alembic under `backend
 | **`0010`** | `0010_create_listings.py` | `0009` | **Commercial Offerings**: Creates `listings` with `rent_basis`, lifecycle/availability status CHECKs, availability-date consistency, and partial-unique active-listing guard `uq_listings_unit_active`. |
 | **`0011`** | `0011_create_listing_price_components.py` | `0010` | **Normalized Pricing**: Creates `listing_price_components` with `BIGINT` paise amounts/rates, and C1–C10 CHECK constraints + a uniqueness constraint covering charge/calculation/frequency. |
 | **`0012`** | `0012_create_listing_photos.py` | `0011` | **Media Model**: Creates `listing_photos` with unique `storage_key`, `media_type` (PHOTO/VIDEO), `upload_status` (PENDING/READY/FAILED), and `(listing_id, display_order)` index. |
+| **`0013`** | `0013_rental_unit_listing_attributes.py` | `0012` | **Unit Listing Attributes**: Adds nullable `rental_units.layout` (+ `ck_units_layout`), `is_independent`, `food_status` (+ `ck_units_food_status`). |
+| **`0014`** | `0014_property_enums_and_flags.py` | `0013` | **Property Enums & Title Hardening**: Extends `ck_properties_type` with `ASSAM_TYPE_HOUSE`; adds nullable `properties.has_curfew`; hardens `listings.title` to NOT NULL after a zero-NULL audit guard. |
+| **`0015`** | `0015_capacity_sharing_nullable.py` | `0014` | **Whole-Home Nullability**: Makes `capacity`/`sharing`/`occupancy_type` nullable; adds `ck_units_layout_scope` + `ck_units_capacity_required`; existing occupancy CHECKs kept (NULL-tolerant). |
 
 ### Golden Rule: Migrations are Append-Only
 Committed migrations must **never be edited or deleted**. If a schema change is required, a new migration (e.g. `0012_...`) must be generated and applied. Every migration script must include a fully tested, working `downgrade()` function to ensure reversible deployments.

@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: Phase 4A (Property-Lister Account) completion.
+Last updated: Phase 2F (Owner Domain Extensions) completion.
 
 ## Current phase
 
@@ -10,6 +10,11 @@ Last updated: Phase 4A (Property-Lister Account) completion.
 **Phase 4A — Property-Lister Account: COMPLETE.**
 **Phase 2C — Owner Property APIs: COMPLETE.**
 **Phase 2D — Owner Rental Unit APIs: COMPLETE.**
+**Phase 2E — Owner Listing APIs (foundation + publication): COMPLETE.**
+**Phase 2F — Owner Domain Extensions: COMPLETE** (whole-home layout,
+nullable capacity/sharing/occupancy, `ASSAM_TYPE_HOUSE`, unit
+`is_independent`, `food_status`, property `has_curfew`, title NOT NULL;
+migrations `0013`–`0015`, head: `0015`).
 
 ## Completed work
 
@@ -17,9 +22,10 @@ Last updated: Phase 4A (Property-Lister Account) completion.
   `docker-compose.yml`, `.env.example`, `README.md`, `.gitignore`.
 * Backend: FastAPI app with `GET /healthz` (liveness) and
   `GET /readyz` (database reachability), SQLAlchemy setup, `locations`,
-  `users` (+ `phone_number`), and `user_profiles` tables, Alembic
-  migrations `0001`–`0006` (head: `0006`), seed script (Guwahati
-  locations), 316 passing tests.
+  `users` (+ `phone_number`), `user_profiles`, owner properties, rental
+  units (+ `layout`, `is_independent`, `food_status`), listings (+ price
+  components, photos) tables, Alembic migrations `0001`–`0015` (head:
+  `0015`), seed script (Guwahati locations), 425 passing tests.
 * Firebase Authentication architecture (Email/Password + Google),
   Firebase Auth Emulator for local development, server-side ID-token
   verification, on-demand user provisioning, `USER` / `OWNER` / `ADMIN`
@@ -36,12 +42,12 @@ Last updated: Phase 4A (Property-Lister Account) completion.
 
 * Docker PostgreSQL container runs (`docker compose ps`: Up).
 * Database is exposed on **host port 5433** (container port 5432).
-* `alembic upgrade head` succeeds; `alembic current` shows `0006 (head)`;
+* `alembic upgrade head` succeeds; `alembic current` shows `0015 (head)`;
   `alembic heads` shows a single head.
 * `python -m app.seed` succeeds (idempotent Guwahati locations).
 * `GET /healthz` returns `{"status":"ok"}`.
 * `GET /readyz` returns `{"status":"ready","db":"up"}`.
-* `pytest -q`: 316 passed, 0 failed, 0 skipped.
+* `pytest -q`: 425 passed, 0 failed, 0 skipped.
 * `npm run typecheck`: clean.
 * `npm run build`: succeeds, static pages prerendered (including the
   `/owner/*` routes).
