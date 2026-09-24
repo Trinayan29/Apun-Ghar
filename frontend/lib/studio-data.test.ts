@@ -341,7 +341,7 @@ describe("sent-but-incomplete drafts", () => {
 });
 
 describe("listing health attention", () => {
-  it("flags published listings missing photos", () => {
+  it("never surfaces photo counts as attention (raw observation only)", () => {
     const data = aggregateStudioData(
       input({
         properties: [prop(1)],
@@ -352,15 +352,11 @@ describe("listing health attention", () => {
         ],
       })
     );
+    // Retained as a data integrity observation, never user-facing attention:
+    // the publish guard requires 3+ READY photos, so this state is
+    // unreachable through the product flow.
     expect(data.insights.health.missingPhotos).toBe(1);
-    expect(data.attention).toHaveLength(1);
-    expect(data.attention[0]).toMatchObject({
-      reason: "published-no-photos",
-      listingId: 100,
-      unitId: 10,
-      propertyId: 1,
-      priority: 3,
-    });
+    expect(data.attention).toEqual([]);
   });
 
   it("caps attention at 5 in priority order", () => {

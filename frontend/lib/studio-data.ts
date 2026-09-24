@@ -109,10 +109,7 @@ export interface StudioDraft {
   remainingSteps: SubmitStep[];
 }
 
-export type AttentionReason =
-  | "send-incomplete"
-  | "stale-draft"
-  | "published-no-photos";
+export type AttentionReason = "send-incomplete" | "stale-draft";
 
 export interface StudioAttention {
   key: string;
@@ -483,8 +480,12 @@ export function aggregateStudioData(input: StudioInput): StudioData {
     },
   };
 
-  // Attention, dashboard priority order: incomplete sends, stale drafts,
-  // published listings missing photos. Capped at MAX_ATTENTION.
+  // Attention, dashboard priority order: incomplete sends, then stale
+  // drafts. Capped at MAX_ATTENTION. Deliberately NOT included:
+  // published listings missing photos — the publish guard requires 3+
+  // READY photos, so that state is unreachable through the product flow
+  // and must never surface as something the owner should act on.
+  // (insights.health.missingPhotos retains the raw observation.)
   const attention: StudioAttention[] = [];
   const byRecency = [...pendingDrafts].sort((a, b) => a.updatedAt - b.updatedAt);
   for (const d of byRecency) {
@@ -513,21 +514,6 @@ export function aggregateStudioData(input: StudioInput): StudioData {
         propertyId: null,
         remainingSteps: [],
         draftAgeDays: ageDays,
-      });
-    }
-  }
-  for (const l of published) {
-    if (l.listing.photoCount === 0) {
-      attention.push({
-        key: `photos:${l.listing.id}`,
-        reason: "published-no-photos",
-        priority: 3,
-        draftId: null,
-        listingId: l.listing.id,
-        unitId: l.unitId,
-        propertyId: l.propertyId,
-        remainingSteps: [],
-        draftAgeDays: null,
       });
     }
   }
