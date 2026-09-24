@@ -619,6 +619,131 @@ def test_list_filter_rental_unit_id(client):
     assert {r["id"] for r in res.json()} == {l1["id"], l2["id"]}
 
 
+def create_whole_home_unit(client, uid, pid, **kwargs):
+    payload = {
+        "unit_type": "ENTIRE_FLAT",
+        "layout": "1 BHK",
+        "furnishing": "SEMI_FURNISHED",
+    }
+    payload.update(kwargs)
+    res = authed(client, uid=uid).post(
+        f"/api/v1/owner/properties/{pid}/units", json=payload
+    )
+    assert res.status_code == 201, res.text
+    return res.json()["id"]
+
+
+def insert_listing_direct(engine, uid, unit_id, **kwargs):
+    """Bypass POST serialization to seed a listing row for GET tests."""
+    db = sessionmaker(bind=engine)()
+    try:
+        owner = db.query(User).filter(User.firebase_uid == uid).one()
+        unit = db.get(RentalUnit, unit_id)
+        assert unit is not None
+        assert unit.property.owner_user_id == owner.id
+        row = Listing(
+            rental_unit_id=unit.id,
+            title=kwargs.get("title", "Whole-home listing"),
+            description=None,
+            rent_basis=kwargs.get("rent_basis", "PER_UNIT"),
+            status="DRAFT",
+            availability_status="AVAILABLE_NOW",
+            available_from=None,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row.id
+    finally:
+        db.close()
+
+
+def test_list_whole_home_null_composition_200(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_whole_home_unit(client, UID, pid)
+    listing_id = insert_listing_direct(engine, UID, unit_id)
+    res = authed(client, uid=UID).get("/api/v1/owner/listings")
+    assert res.status_code == 200, res.text
+    assert len(res.json()) == 1
+    row = res.json()[0]
+    assert row["id"] == listing_id
+    assert row["rental_unit_id"] == unit_id
+    nested = row["rental_unit"]
+    assert nested["occupancy_type"] is None
+    assert nested["sharing"] is None
+    assert nested["capacity"] is None
+
+
+def test_create_listing_whole_home_201(client):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_whole_home_unit(client, UID, pid)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/listings", json=valid_listing(unit_id, rent_basis="PER_UNIT")
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["rental_unit"]["occupancy_type"] is None
+
+
+def test_list_mixed_unit_types_200(client):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    room = create_unit(client, UID, pid)
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/properties/{pid}/units",
+        json={
+            "unit_type": "SHARED_ROOM_BED",
+            "occupancy_type": "DOUBLE",
+            "capacity": 2,
+            "sharing": "SHARED",
+            "furnishing": "FURNISHED",
+        },
+    )
+    assert res.status_code == 201, res.text
+    shared = res.json()["id"]
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/properties/{pid}/units",
+        json={
+            "unit_type": "PG_BED",
+            "occupancy_type": "SINGLE",
+            "capacity": 1,
+            "sharing": "PRIVATE",
+            "furnishing": "FURNISHED",
+        },
+    )
+    assert res.status_code == 201, res.text
+    bed = res.json()["id"]
+    whole = create_whole_home_unit(client, UID, pid)
+    create_listing(client, UID, room)
+    create_listing(client, UID, shared)
+    create_listing(client, UID, bed)
+    create_listing(client, UID, whole, rent_basis="PER_UNIT")
+    res = authed(client, uid=UID).get("/api/v1/owner/listings")
+    assert res.status_code == 200, res.text
+    assert len(res.json()) == 4
+    by_unit = {r["rental_unit_id"]: r for r in res.json()}
+    assert by_unit[room]["rental_unit"]["occupancy_type"] == "SINGLE"
+    assert by_unit[room]["rental_unit"]["capacity"] == 1
+    assert by_unit[shared]["rental_unit"]["occupancy_type"] == "DOUBLE"
+    assert by_unit[bed]["rental_unit"]["sharing"] == "PRIVATE"
+    assert by_unit[whole]["rental_unit"]["occupancy_type"] is None
+    assert by_unit[whole]["rental_unit"]["sharing"] is None
+    assert by_unit[whole]["rental_unit"]["capacity"] is None
+
+
+def test_recovery_lookup_whole_home_200(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_whole_home_unit(client, UID, pid)
+    listing_id = insert_listing_direct(engine, UID, unit_id)
+    res = authed(client, uid=UID).get(
+        "/api/v1/owner/listings", params={"rental_unit_id": unit_id}
+    )
+    assert res.status_code == 200, res.text
+    assert [r["id"] for r in res.json()] == [listing_id]
+
+
 def test_get_own_200(client):
     provision_owner(client, UID)
     pid = create_property(client, UID)

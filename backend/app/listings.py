@@ -47,9 +47,12 @@ class UnitNestedRead(BaseModel):
     id: int
     property_id: int
     unit_type: str
-    occupancy_type: str
-    capacity: int
-    sharing: str
+    # Nullable like the RentalUnit columns and RentalUnitRead: whole-home
+    # units legitimately store NULL here ("not applicable"). Declaring them
+    # non-null 500s every owner-listings read for whole-home units.
+    occupancy_type: str | None
+    capacity: int | None
+    sharing: str | None
     furnishing: str
     gender_scope: str
     bathrooms: int | None
