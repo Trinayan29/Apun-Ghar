@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { listLocations, type LocationItem } from "@/lib/api";
+import { listLocations, type LocationItem, type LocationKind } from "@/lib/api";
 import { Field, TextField } from "@/components/auth-ui";
 
 type SearchStatus = "idle" | "searching" | "done" | "error";
@@ -27,7 +27,7 @@ export function LocationSearchField({
   onSelect,
   onClear,
 }: {
-  kind: "college" | "workplace";
+  kind: LocationKind;
   label: string;
   placeholder: string;
   value: LocationItem | null;
@@ -84,35 +84,32 @@ export function LocationSearchField({
 
   return (
     <div>
-      {value && (
-        <div className="mb-3 flex items-center justify-between rounded-xl border border-brand-600 bg-brand-50 px-3.5 py-3">
-          <div className="text-[14px] font-semibold">
-            {value.name}
-            <span className="block text-[12.5px] font-normal text-muted">
-              {value.city}
-            </span>
-          </div>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={onClear}
-            className="text-[13px] font-bold text-brand-700 underline disabled:opacity-60"
-          >
-            Clear
-          </button>
-        </div>
-      )}
-
       <Field id={inputId} label={label}>
-        <TextField
-          id={inputId}
-          type="text"
-          autoComplete="off"
-          placeholder={placeholder}
-          value={query}
-          disabled={disabled}
-          onChange={setQuery}
-        />
+        {value ? (
+          <div className="flex min-h-[52px] items-center justify-between gap-2 rounded-xl border border-line bg-white px-4">
+            <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">
+              {value.name}
+            </span>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={onClear}
+              className="flex min-h-[44px] shrink-0 items-center px-1 text-[13px] font-bold text-brand-700 underline disabled:opacity-60"
+            >
+              Clear
+            </button>
+          </div>
+        ) : (
+          <TextField
+            id={inputId}
+            type="text"
+            autoComplete="off"
+            placeholder={placeholder}
+            value={query}
+            disabled={disabled}
+            onChange={setQuery}
+          />
+        )}
       </Field>
 
       {status === "searching" && (

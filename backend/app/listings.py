@@ -522,6 +522,7 @@ def list_owner_listings(
     db: Session = Depends(get_db),
     limit: int = Query(default=20, ge=1, le=50),
     offset: int = Query(default=0, ge=0),
+    rental_unit_id: int | None = Query(default=None, gt=0),
 ):
     stmt = (
         select(Listing)
@@ -529,10 +530,13 @@ def list_owner_listings(
         .join(Property, RentalUnit.property_id == Property.id)
         .where(Property.owner_user_id == user.id)
         .order_by(Listing.id.asc())
-        .limit(limit)
-        .offset(offset)
         .options(*_listing_eager_options())
     )
+    if rental_unit_id is not None:
+        # Narrowing filter for 409-recovery lookups. Owner scoping above is
+        # unchanged: another owner's unit id yields [] (never their rows).
+        stmt = stmt.where(Listing.rental_unit_id == rental_unit_id)
+    stmt = stmt.limit(limit).offset(offset)
     rows = list(db.execute(stmt).scalars().all())
     return [_sort_nested(row) for row in rows]
 

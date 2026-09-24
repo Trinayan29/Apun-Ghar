@@ -583,6 +583,42 @@ def test_list_ordering_pagination(client):
     assert [r["id"] for r in res2.json()] == ids[2:]
 
 
+def test_list_filter_rental_unit_id(client):
+    provision_owner(client, UID)
+    provision_owner(client, OTHER_UID)
+    pid = create_property(client, UID)
+    u1 = create_unit(client, UID, pid)
+    u2 = create_unit(client, UID, pid)
+    l1 = create_listing(client, UID, u1)
+    l2 = create_listing(client, UID, u2)
+    opid = create_property(client, OTHER_UID)
+    ou = create_unit(client, OTHER_UID, opid)
+    create_listing(client, OTHER_UID, ou)
+    res = authed(client, uid=UID).get(
+        "/api/v1/owner/listings", params={"rental_unit_id": u1}
+    )
+    assert res.status_code == 200, res.text
+    assert [r["id"] for r in res.json()] == [l1["id"]]
+    res = authed(client, uid=UID).get(
+        "/api/v1/owner/listings", params={"rental_unit_id": u2}
+    )
+    assert [r["id"] for r in res.json()] == [l2["id"]]
+    # Another owner's unit id yields [] — owner scoping holds, no leak.
+    res = authed(client, uid=UID).get(
+        "/api/v1/owner/listings", params={"rental_unit_id": ou}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json() == []
+    # Non-positive filter values are rejected.
+    res = authed(client, uid=UID).get(
+        "/api/v1/owner/listings", params={"rental_unit_id": 0}
+    )
+    assert res.status_code == 422, res.text
+    # Omitted filter keeps the legacy unfiltered behavior.
+    res = authed(client, uid=UID).get("/api/v1/owner/listings")
+    assert {r["id"] for r in res.json()} == {l1["id"], l2["id"]}
+
+
 def test_get_own_200(client):
     provision_owner(client, UID)
     pid = create_property(client, UID)

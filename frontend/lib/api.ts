@@ -95,6 +95,21 @@ async function request<T>(
 
 export const getMe = () => request<AppUser>("/api/v1/users/me");
 
+/** Authenticated JSON POST used by the owner-listing submit flow. */
+export function apiPost<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, { method: "POST", body });
+}
+
+/** Authenticated JSON PUT (price-components bulk replace). Same auth as apiPost. */
+export function apiPut<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, { method: "PUT", body });
+}
+
+/** Authenticated JSON GET (listing 409-recovery lookup). Same auth as apiPost. */
+export function apiGet<T>(path: string): Promise<T> {
+  return request<T>(path);
+}
+
 export interface OwnerSignupPayload {
   display_name: string;
   phone_number: string;
@@ -132,8 +147,10 @@ export const patchMyProfile = (patch: ProfilePatch) =>
     body: patch,
   });
 
+export type LocationKind = "college" | "workplace" | "area";
+
 export const listLocations = (
-  type: "college" | "workplace",
+  type: LocationKind,
   search: string
 ): Promise<LocationItem[]> => {
   const params = new URLSearchParams({ type, limit: "10" });
