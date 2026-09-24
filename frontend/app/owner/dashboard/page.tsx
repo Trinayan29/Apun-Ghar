@@ -7,16 +7,16 @@ import { useAuth } from "@/components/AuthProvider";
 import { ApiError, getMe, type AppUser } from "@/lib/api";
 import { FormError } from "@/components/auth-ui";
 import {
-  BuildingIcon,
-  CalendarIcon,
-  ComingSoonPill,
-  InboxIcon,
   OwnerBottomNav,
   OwnerDesktopHeader,
   OwnerEmptyState,
-  OwnerIdentityBand,
-  OwnerSectionLabel,
+  BuildingIcon,
 } from "@/components/owner-ui";
+import { loadStudioData, type StudioData } from "@/lib/studio-data";
+import { StudioShell } from "./_components/studio-shell";
+import { IdentityStrip } from "./_components/identity-strip";
+import { AddPlaceButton } from "./_components/add-place-button";
+import { InboxStub } from "./_components/section-slots";
 
 export default function OwnerDashboardPage() {
   const router = useRouter();
@@ -24,6 +24,13 @@ export default function OwnerDashboardPage() {
   const [me, setMe] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [authChecked, setAuthChecked] = useState(false);
+
+  const [studio, setStudio] = useState<StudioData | null>(null);
+  const [studioStatus, setStudioStatus] = useState<"loading" | "ready" | "error">(
+    "loading"
+  );
+  const [studioError, setStudioError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -63,6 +70,7 @@ export default function OwnerDashboardPage() {
         }
         setMe(u);
         setLoading(false);
+        setAuthChecked(true);
       } catch (err) {
         if (cancelled) return;
         if (err instanceof ApiError && err.isUnauthorized) {
@@ -79,6 +87,37 @@ export default function OwnerDashboardPage() {
       cancelled = true;
     };
   }, [authLoading, firebaseUser, router]);
+
+  const loadStudio = useCallback(async () => {
+    const uid = firebaseUser?.uid;
+    if (!uid) return;
+    setStudioStatus("loading");
+    setStudioError(null);
+    try {
+      const result = await loadStudioData({ uid });
+      setStudio(result.data);
+      if (result.status === "auth-error") {
+        router.replace("/owner/login");
+        return;
+      }
+      if (result.status === "inventory-error") {
+        setStudioStatus("error");
+        setStudioError(result.inventoryError);
+        return;
+      }
+      setStudioStatus("ready");
+    } catch {
+      // loadStudioData only rejects on unexpected failures; drafts may
+      // still be absent. Keep the shell structurally safe, not blank.
+      setStudioStatus("error");
+      setStudioError("Couldn't load your places right now.");
+    }
+  }, [firebaseUser?.uid, router]);
+
+  useEffect(() => {
+    if (!authChecked) return;
+    void loadStudio();
+  }, [authChecked, loadStudio]);
 
   if (authLoading || loading) {
     return (
@@ -111,117 +150,70 @@ export default function OwnerDashboardPage() {
     );
   }
 
-  const name = me.display_name ?? me.email ?? "Owner";
+  const summary = studio?.summary ?? null;
+  const studioState =
+    studioStatus === "loading" ? "loading" : studioStatus === "error" ? "error" : "ready";
+  const isEmpty =
+    studioState === "ready" &&
+    studio !== null &&
+    studio.properties.length === 0 &&
+    studio.drafts.length === 0 &&
+    studio.attention.length === 0;
 
   return (
     <main className="flex min-h-dvh flex-col bg-paper text-ink">
-      <OwnerDesktopHeader name={name} />
-      <OwnerIdentityBand name={name} accountHref="/owner/account" />
+      <OwnerDesktopHeader name={me.display_name ?? me.email ?? "Owner"} />
+      <IdentityStrip
+        displayName={me.display_name}
+        email={me.email}
+        summary={summary}
+        state={studioState}
+      />
 
-      <div className="mx-auto w-full max-w-6xl flex-1 px-5 py-5 lg:px-8">
-        <div className="grid gap-6 lg:grid-cols-2">
-          <div>
-            <OwnerSectionLabel>Getting started</OwnerSectionLabel>
-            <section
-              aria-label="Welcome"
-              className="mt-2.5 rounded-2xl border border-line bg-white p-5"
-            >
-              <h2 className="text-[16px] font-bold tracking-tight">
-                Your owner account is ready.
-              </h2>
-              <p className="mt-1 text-[13.5px] leading-relaxed text-muted">
-                This is your Owner Studio. Property listing tools are still
-                being built — once they launch, you&apos;ll add photos, set
-                rent, and publish your first listing from here.
+      <StudioShell
+        main={
+          <>
+            <div className="lg:hidden">
+              <AddPlaceButton />
+            </div>
+            {studioState === "loading" && (
+              <p className="text-[14px] text-muted" role="status">
+                Loading your studio…
               </p>
-            </section>
-
-            <div className="mt-6">
-              <OwnerSectionLabel>Enquiries & visits</OwnerSectionLabel>
-              <div className="mt-2.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-                <section
-                  aria-label="Enquiries"
-                  className="rounded-2xl border border-line bg-white p-4"
-                >
-                  <span
-                    aria-hidden
-                    className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-50 text-brand-700"
-                  >
-                    <InboxIcon />
-                  </span>
-                  <p className="mt-2 text-[14px] font-bold">Enquiries</p>
-                  <p className="mt-0.5 text-[12.5px] leading-relaxed text-muted">
-                    Tenant messages about your properties will appear here.
-                  </p>
-                  <p className="mt-2">
-                    <ComingSoonPill />
-                  </p>
-                </section>
-                <section
-                  aria-label="Visits"
-                  className="rounded-2xl border border-line bg-white p-4"
-                >
-                  <span
-                    aria-hidden
-                    className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-50 text-brand-700"
-                  >
-                    <CalendarIcon />
-                  </span>
-                  <p className="mt-2 text-[14px] font-bold">Visits</p>
-                  <p className="mt-0.5 text-[12.5px] leading-relaxed text-muted">
-                    Confirmed property visits will appear here with date and
-                    time.
-                  </p>
-                  <p className="mt-2">
-                    <ComingSoonPill />
-                  </p>
-                </section>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-6">
-            <div>
-              <OwnerSectionLabel>Your properties</OwnerSectionLabel>
-              <div className="mt-2.5">
-                <OwnerEmptyState
-                  title="No properties yet"
-                  body="Your property management tools are coming soon. Once live, add photos, rent, and availability here."
-                  icon={<BuildingIcon />}
-                  action={
-                    <span className="flex min-h-[48px] cursor-not-allowed items-center justify-center rounded-xl bg-paper px-5 text-[15px] font-bold text-muted">
-                      Add property · <ComingSoonPill />
-                    </span>
-                  }
+            )}
+            {studioState === "error" && (
+              <div>
+                <FormError
+                  message={studioError ?? "Couldn't load your places right now."}
                 />
+                <button
+                  type="button"
+                  onClick={() => void loadStudio()}
+                  className="mt-3 flex min-h-[48px] w-full items-center justify-center rounded-xl border border-line bg-white px-5 text-[15px] font-semibold"
+                >
+                  Retry
+                </button>
               </div>
+            )}
+            {studio !== null && isEmpty && (
+              <OwnerEmptyState
+                title="No places yet"
+                body="Add your first place to start reaching renters. It takes about ten minutes, one small step at a time."
+                icon={<BuildingIcon />}
+                action={<AddPlaceButton />}
+              />
+            )}
+          </>
+        }
+        rail={
+          <>
+            <div className="hidden lg:block">
+              <AddPlaceButton />
             </div>
-
-            <div>
-              <OwnerSectionLabel>What you&apos;ll manage here</OwnerSectionLabel>
-              <section
-                aria-label="What you'll manage here"
-                className="mt-2.5 rounded-2xl border border-line bg-white p-5"
-              >
-                <ul className="space-y-2 text-[13.5px] leading-relaxed text-muted">
-                  {[
-                    "Listing details — photos, rent, rooms, and house rules",
-                    "Availability — pause or unpublish a property anytime",
-                    "Enquiries and visits per property",
-                  ].map((item) => (
-                    <li key={item} className="flex items-start gap-2">
-                      <span aria-hidden className="mt-0.5 text-brand-600">
-                        ✓
-                      </span>
-                      {item}
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            </div>
-          </div>
-        </div>
-      </div>
+            <InboxStub />
+          </>
+        }
+      />
 
       <OwnerBottomNav />
     </main>
