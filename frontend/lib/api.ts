@@ -147,6 +147,72 @@ export const patchMyProfile = (patch: ProfilePatch) =>
     body: patch,
   });
 
+/* ------------------------------------------------------------------ */
+/* Owner Studio inventory reads (Phase A aggregation foundation)        */
+/* Minimal structural mirrors: only the fields the aggregation layer    */
+/* consumes. Backend returns richer objects; structural typing accepts  */
+/* them. Same Firebase-authenticated request() mechanism as everything  */
+/* above — no second client, no new auth logic.                         */
+/* ------------------------------------------------------------------ */
+
+export interface OwnerPropertyItem {
+  id: number;
+  property_type: string;
+  address_line: string;
+  locality: string | null;
+  city: string | null;
+  area_location_id: number | null;
+  area_location: {
+    id: number;
+    type: string;
+    name: string;
+    city: string;
+  } | null;
+}
+
+export interface OwnerUnitItem {
+  id: number;
+  property_id: number;
+  unit_type: string;
+  layout: string | null;
+}
+
+export interface OwnerPriceItem {
+  charge_type: string;
+  amount_paise: number | null;
+  billing_frequency: string;
+  calculation_basis: string;
+}
+
+export interface OwnerPhotoItem {
+  id: number;
+}
+
+export interface OwnerListingItem {
+  id: number;
+  rental_unit_id: number;
+  title: string;
+  description: string | null;
+  rent_basis: string;
+  status: string;
+  availability_status: string;
+  available_from: string | null;
+  price_components: OwnerPriceItem[];
+  photos: OwnerPhotoItem[];
+  created_at: string;
+}
+
+export const listOwnerProperties = (): Promise<OwnerPropertyItem[]> =>
+  apiGet<OwnerPropertyItem[]>("/api/v1/owner/properties");
+
+export const listPropertyUnits = (
+  propertyId: number
+): Promise<OwnerUnitItem[]> =>
+  apiGet<OwnerUnitItem[]>(`/api/v1/owner/properties/${propertyId}/units`);
+
+export const listOwnerListings = (): Promise<OwnerListingItem[]> =>
+  apiGet<OwnerListingItem[]>("/api/v1/owner/listings");
+
 export type LocationKind = "college" | "workplace" | "area";
 
 export const listLocations = (
