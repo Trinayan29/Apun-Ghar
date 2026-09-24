@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { useAuth } from "@/components/AuthProvider";
 import { ApiError, getMe, type AppUser } from "@/lib/api";
 import { FormError } from "@/components/auth-ui";
@@ -12,15 +13,38 @@ import {
   OwnerEmptyState,
   BuildingIcon,
 } from "@/components/owner-ui";
+import {
+  ListingDraftStoreProvider,
+  useListingDrafts,
+} from "@/components/listing/draft-store";
+import {
+  createSubmitGuard,
+  runSubmitAction,
+  submitErrorMessage,
+  type SubmitGuard,
+} from "@/lib/listing-submit-action";
 import { loadStudioData, type StudioData } from "@/lib/studio-data";
 import { StudioShell } from "./_components/studio-shell";
 import { IdentityStrip } from "./_components/identity-strip";
 import { AddPlaceButton } from "./_components/add-place-button";
 import { InboxStub } from "./_components/section-slots";
+import { NeedsAttention } from "./_components/needs-attention";
 
 export default function OwnerDashboardPage() {
+  // Store is keyed by the live Firebase UID (never the URL), matching the
+  // listing wizard: retry reads the same UID-scoped drafts the wizard wrote.
+  const { firebaseUser } = useAuth();
+  return (
+    <ListingDraftStoreProvider uid={firebaseUser?.uid ?? ""}>
+      <Dashboard />
+    </ListingDraftStoreProvider>
+  );
+}
+
+function Dashboard() {
   const router = useRouter();
   const { firebaseUser, loading: authLoading } = useAuth();
+  const { getDraft, updateDraft } = useListingDrafts();
   const [me, setMe] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -119,6 +143,69 @@ export default function OwnerDashboardPage() {
     void loadStudio();
   }, [authChecked, loadStudio]);
 
+  // Needs Attention retry: single-flight guard per wizard mount, per-item
+  // sending/error state. Persists ids + progress on both success and
+  // failure via the existing machinery, then reloads authoritative Studio
+  // data so the item disappears only when it truly no longer qualifies.
+  // flushSync forces the store's localStorage write before the reload
+  // reads it back; without it the refresh could see stale progress.
+  const submitGuardRef = useRef<SubmitGuard | null>(null);
+  if (submitGuardRef.current === null)
+    submitGuardRef.current = createSubmitGuard();
+  const [sending, setSending] = useState<Record<string, boolean>>({});
+  const [actionErrors, setActionErrors] = useState<Record<string, string | null>>(
+    {}
+  );
+
+  const handleRetry = useCallback(
+    async (draftId: string) => {
+      const full = getDraft(draftId);
+      if (!full) {
+        setActionErrors((m) => ({
+          ...m,
+          [draftId]: "Couldn't find that draft on this device.",
+        }));
+        return;
+      }
+      setSending((m) => ({ ...m, [draftId]: true }));
+      setActionErrors((m) => ({ ...m, [draftId]: null }));
+      try {
+        const outcome = await runSubmitAction({
+          draft: full,
+          guard: submitGuardRef.current as SubmitGuard,
+          persist: (ids, progress) =>
+            flushSync(() => {
+              updateDraft(draftId, { backendIds: ids, submitProgress: progress });
+            }),
+        });
+        if (outcome.type === "busy") return;
+        if (outcome.type === "invalid") {
+          // A pending draft edited into an invalid state cannot be fixed
+          // from here: open it in the wizard (same destination as
+          // Continue), where the chapter validation guides the fix.
+          router.push(`/owner/listings/new?draft=${draftId}`);
+          return;
+        }
+        if (!outcome.result.ok) {
+          const message = submitErrorMessage(outcome.result);
+          setActionErrors((m) => ({ ...m, [draftId]: message }));
+          return;
+        }
+        await loadStudio();
+      } finally {
+        setSending((m) => ({ ...m, [draftId]: false }));
+      }
+    },
+    [getDraft, updateDraft, loadStudio, router]
+  );
+
+  const draftTitles = useMemo(() => {
+    if (!studio) return {};
+    return Object.fromEntries(
+      studio.drafts.map((d) => [d.draftId, d.title])
+    ) as Record<string, string | null>;
+  }, [studio]);
+
   if (authLoading || loading) {
     return (
       <main className="mx-auto w-full max-w-sm px-6 py-10">
@@ -194,6 +281,15 @@ export default function OwnerDashboardPage() {
                   Retry
                 </button>
               </div>
+            )}
+            {studio !== null && (
+              <NeedsAttention
+                items={studio.attention}
+                titles={draftTitles}
+                sending={sending}
+                errors={actionErrors}
+                onRetry={(draftId) => void handleRetry(draftId)}
+              />
             )}
             {studio !== null && isEmpty && (
               <OwnerEmptyState
