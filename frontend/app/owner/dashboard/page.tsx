@@ -29,6 +29,7 @@ import { IdentityStrip } from "./_components/identity-strip";
 import { AddPlaceButton } from "./_components/add-place-button";
 import { InboxStub } from "./_components/section-slots";
 import { NeedsAttention } from "./_components/needs-attention";
+import { ContinueDrafts } from "./_components/continue-drafts";
 
 export default function OwnerDashboardPage() {
   // Store is keyed by the live Firebase UID (never the URL), matching the
@@ -290,6 +291,9 @@ function Dashboard() {
                 errors={actionErrors}
                 onRetry={(draftId) => void handleRetry(draftId)}
               />
+            )}
+            {studio !== null && (
+              <ContinueDrafts drafts={studio.drafts} attention={studio.attention} />
             )}
             {studio !== null && isEmpty && (
               <OwnerEmptyState
