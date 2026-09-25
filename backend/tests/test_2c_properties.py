@@ -229,6 +229,7 @@ def test_create_response_shape(client, engine):
         "owner_user_id",
         "property_type",
         "address_line",
+        "name",
         "locality",
         "area_location_id",
         "area_location",
@@ -257,6 +258,137 @@ def test_default_city(client, engine):
     )
     assert res.status_code == 201
     assert res.json()["city"] == "Guwahati"
+
+
+def test_create_with_name_201(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload(name="Ashim's House")
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["name"] == "Ashim's House"
+    pid = res.json()["id"]
+    res = authed(client, uid=UID).get(f"/api/v1/owner/properties/{pid}")
+    assert res.status_code == 200, res.text
+    assert res.json()["name"] == "Ashim's House"
+
+
+def test_create_without_name_null(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload()
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["name"] is None
+
+
+def test_create_explicit_null_name_201(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload(name=None)
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["name"] is None
+
+
+def test_create_blank_name_422(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload(name="   ")
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_create_name_trimmed(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload(name="  Ashim's House  ")
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["name"] == "Ashim's House"
+
+
+def test_create_name_length(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload(name="x" * 120)
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["name"] == "x" * 120
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload(name="x" * 121)
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_patch_rename_200(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload(name="Old Name")
+    )
+    pid = res.json()["id"]
+    res = authed(client, uid=UID).patch(
+        f"/api/v1/owner/properties/{pid}", json={"name": "Sunrise Residency"}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["name"] == "Sunrise Residency"
+    res = authed(client, uid=UID).get(f"/api/v1/owner/properties/{pid}")
+    assert res.json()["name"] == "Sunrise Residency"
+
+
+def test_patch_name_null_200(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload(name="Old Name")
+    )
+    pid = res.json()["id"]
+    res = authed(client, uid=UID).patch(
+        f"/api/v1/owner/properties/{pid}", json={"name": None}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["name"] is None
+
+
+def test_patch_blank_name_422(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload()
+    )
+    pid = res.json()["id"]
+    res = authed(client, uid=UID).patch(
+        f"/api/v1/owner/properties/{pid}", json={"name": "  "}
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_unnamed_property_readable(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload()
+    )
+    pid = res.json()["id"]
+    res = authed(client, uid=UID).get(f"/api/v1/owner/properties/{pid}")
+    assert res.status_code == 200, res.text
+    assert res.json()["name"] is None
+    res = authed(client, uid=UID).get("/api/v1/owner/properties")
+    assert res.status_code == 200, res.text
+    assert [r["id"] for r in res.json()] == [pid]
+    assert res.json()[0]["name"] is None
+
+
+def test_patch_foreign_name_404(client, engine):
+    provision_owner(client, UID)
+    provision_owner(client, OTHER_UID)
+    res = authed(client, uid=OTHER_UID).post(
+        "/api/v1/owner/properties", json=valid_payload(name="Theirs")
+    )
+    pid = res.json()["id"]
+    res = authed(client, uid=UID).patch(
+        f"/api/v1/owner/properties/{pid}", json={"name": "Hijacked"}
+    )
+    assert res.status_code == 404, res.text
+    res = authed(client, uid=OTHER_UID).get(f"/api/v1/owner/properties/{pid}")
+    assert res.json()["name"] == "Theirs"
 
 
 def test_nested_locations(client, engine):

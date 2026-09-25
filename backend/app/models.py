@@ -160,6 +160,9 @@ class Property(Base):
         ForeignKey("users.id", ondelete="RESTRICT")
     )
     property_type: Mapped[str] = mapped_column(String(30))
+    # Owner-defined human identity ("Ashim's House"). Nullable: legacy
+    # rows predate naming. Never derived, never unique, never required.
+    name: Mapped[str | None] = mapped_column(String(120))
     address_line: Mapped[str] = mapped_column(Text)
     locality: Mapped[str | None] = mapped_column(Text)
     area_location_id: Mapped[int | None] = mapped_column(

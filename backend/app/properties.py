@@ -41,6 +41,7 @@ class PropertyCreate(BaseModel):
         "OTHER",
     ]
     address_line: str = Field(min_length=1, max_length=2000)
+    name: str | None = Field(default=None, max_length=120)
     locality: str | None = Field(default=None, max_length=2000)
     area_location_id: int | None = None
     city: str | None = Field(default=None, max_length=100)
@@ -63,7 +64,7 @@ class PropertyCreate(BaseModel):
             raise ValueError("address_line cannot be blank")
         return v
 
-    @field_validator("city", "locality")
+    @field_validator("city", "locality", "name")
     @classmethod
     def _strip_city_locality(
         cls, v: str | None, info: ValidationInfo
@@ -84,6 +85,7 @@ class PropertyUpdate(BaseModel):
         "OTHER",
     ] | None = None
     address_line: str | None = Field(default=None, min_length=1, max_length=2000)
+    name: str | None = Field(default=None, max_length=120)
     locality: str | None = Field(default=None, max_length=2000)
     area_location_id: int | None = None
     city: str | None = Field(default=None, max_length=100)
@@ -108,7 +110,7 @@ class PropertyUpdate(BaseModel):
             raise ValueError("address_line cannot be blank")
         return v
 
-    @field_validator("city", "locality")
+    @field_validator("city", "locality", "name")
     @classmethod
     def _strip_city_locality(
         cls, v: str | None, info: ValidationInfo
@@ -123,6 +125,7 @@ class PropertyRead(BaseModel):
     owner_user_id: int
     property_type: str
     address_line: str
+    name: str | None
     locality: str | None
     area_location_id: int | None
     area_location: LocationRead | None
