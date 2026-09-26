@@ -215,6 +215,18 @@ export const listPropertyUnits = (
 export const listOwnerListings = (): Promise<OwnerListingItem[]> =>
   apiGet<OwnerListingItem[]>("/api/v1/owner/listings");
 
+/** Pause a PUBLISHED listing. Guards live server-side; same auth as apiPost. */
+export const pauseOwnerListing = (
+  listingId: number
+): Promise<OwnerListingItem> =>
+  apiPost<OwnerListingItem>(`/api/v1/owner/listings/${listingId}/pause`, {});
+
+/** Resume a PAUSED listing via publish. Guards live server-side. */
+export const publishOwnerListing = (
+  listingId: number
+): Promise<OwnerListingItem> =>
+  apiPost<OwnerListingItem>(`/api/v1/owner/listings/${listingId}/publish`, {});
+
 export type LocationKind = "college" | "workplace" | "area";
 
 export const listLocations = (

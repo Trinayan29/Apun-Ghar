@@ -47,10 +47,12 @@ export function PropertyCard({
   property,
   open,
   onToggle,
+  onListingChanged,
 }: {
   property: StudioProperty;
   open: boolean;
   onToggle: () => void;
+  onListingChanged: () => void;
 }) {
   const location = locationLine(property);
   const typeLabel =
@@ -98,7 +100,11 @@ export function PropertyCard({
         <div className="border-t border-line px-4 py-3 sm:px-5">
           <div className="divide-y divide-line">
             {property.units.map((unit) => (
-              <UnitRow key={unit.id} unit={unit} />
+              <UnitRow
+                key={unit.id}
+                unit={unit}
+                onListingChanged={onListingChanged}
+              />
             ))}
           </div>
         </div>

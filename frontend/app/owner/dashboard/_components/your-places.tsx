@@ -10,7 +10,13 @@ import { PropertyCard } from "./property-card";
  * Absent when the owner has no properties.
  */
 
-export function YourPlaces({ properties }: { properties: StudioProperty[] }) {
+export function YourPlaces({
+  properties,
+  onListingChanged,
+}: {
+  properties: StudioProperty[];
+  onListingChanged: () => void;
+}) {
   const [openIds, setOpenIds] = useState<ReadonlySet<number> | null>(null);
   if (properties.length === 0) return null;
   const open = openIds ?? new Set([properties[0].id]);
@@ -33,6 +39,7 @@ export function YourPlaces({ properties }: { properties: StudioProperty[] }) {
             property={property}
             open={open.has(property.id)}
             onToggle={() => toggle(property.id)}
+            onListingChanged={onListingChanged}
           />
         ))}
       </div>

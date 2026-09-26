@@ -296,7 +296,12 @@ function Dashboard() {
             {studio !== null && (
               <ContinueDrafts drafts={studio.drafts} attention={studio.attention} />
             )}
-            {studio !== null && <YourPlaces properties={studio.properties} />}
+            {studio !== null && (
+              <YourPlaces
+                properties={studio.properties}
+                onListingChanged={() => void loadStudio()}
+              />
+            )}
             {studio !== null && isEmpty && (
               <OwnerEmptyState
                 title="No places yet"

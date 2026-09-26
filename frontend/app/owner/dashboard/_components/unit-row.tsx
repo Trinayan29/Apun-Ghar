@@ -1,5 +1,6 @@
 import { inr } from "@/lib/listing-draft";
 import type { StudioUnit } from "@/lib/studio-data";
+import { ListingLifecycleAction } from "./listing-lifecycle";
 
 /**
  * One rental unit row inside a property group (Phase E). Read-only
@@ -54,7 +55,13 @@ function rentLine(unit: StudioUnit): string | null {
   return rent.billingFrequency === "MONTHLY" ? `${amount}/month` : amount;
 }
 
-export function UnitRow({ unit }: { unit: StudioUnit }) {
+export function UnitRow({
+  unit,
+  onListingChanged,
+}: {
+  unit: StudioUnit;
+  onListingChanged: () => void;
+}) {
   const lifecycle = unit.listing
     ? (LIFECYCLE_LABELS[unit.listing.lifecycle] ?? unit.listing.lifecycle)
     : null;
@@ -81,6 +88,13 @@ export function UnitRow({ unit }: { unit: StudioUnit }) {
         {availabilityLine(unit)}
         {unit.listing ? ` · ${rentLine(unit)}` : ""}
       </p>
+      {unit.listing && (
+        <ListingLifecycleAction
+          listingId={unit.listing.id}
+          lifecycle={unit.listing.lifecycle}
+          onChanged={onListingChanged}
+        />
+      )}
     </div>
   );
 }
