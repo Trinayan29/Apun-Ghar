@@ -25,6 +25,7 @@ import {
   validateMoveIn,
   validateName,
   validatePhotos,
+  validatePlaceName,
   validatePrice,
   validateSpace,
   validateWhat,
@@ -38,6 +39,7 @@ import {
   MoveInChapter,
   NameChapter,
   PhotosChapter,
+  PlaceNameChapter,
   PreviewChapter,
   PriceChapter,
   PublishChapter,
@@ -158,8 +160,10 @@ function Wizard() {
           ? validateKind(draft.place)
           : chapter === "where"
             ? validateWhere(draft.place)
-            : chapter === "space"
-              ? validateSpace(draft.space)
+            : chapter === "placename"
+              ? validatePlaceName(draft.place)
+              : chapter === "space"
+                ? validateSpace(draft.space)
               : chapter === "photos"
                 ? validatePhotos(draft.photos)
                 : chapter === "price"
@@ -256,6 +260,8 @@ function Wizard() {
       );
     if (chapter === "where")
       return <WhereChapter place={draft.place} onPlace={patchPlace} error={formError} />;
+    if (chapter === "placename")
+      return <PlaceNameChapter place={draft.place} onPlace={patchPlace} error={formError} />;
     if (chapter === "space")
       return <SpaceChapter draft={draft} onSpace={patchSpace} error={formError} />;
     if (chapter === "included")

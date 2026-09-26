@@ -30,6 +30,7 @@ import { AddPlaceButton } from "./_components/add-place-button";
 import { InboxStub } from "./_components/section-slots";
 import { NeedsAttention } from "./_components/needs-attention";
 import { ContinueDrafts } from "./_components/continue-drafts";
+import { YourPlaces } from "./_components/your-places";
 
 export default function OwnerDashboardPage() {
   // Store is keyed by the live Firebase UID (never the URL), matching the
@@ -295,6 +296,7 @@ function Dashboard() {
             {studio !== null && (
               <ContinueDrafts drafts={studio.drafts} attention={studio.attention} />
             )}
+            {studio !== null && <YourPlaces properties={studio.properties} />}
             {studio !== null && isEmpty && (
               <OwnerEmptyState
                 title="No places yet"

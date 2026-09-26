@@ -158,6 +158,8 @@ export const patchMyProfile = (patch: ProfilePatch) =>
 export interface OwnerPropertyItem {
   id: number;
   property_type: string;
+  /** Owner-defined place identity. Null for legacy unnamed properties. */
+  name: string | null;
   address_line: string;
   locality: string | null;
   city: string | null;

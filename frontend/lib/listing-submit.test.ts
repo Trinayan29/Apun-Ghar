@@ -191,6 +191,24 @@ describe("unit composition mapping", () => {
     ).toEqual({ ids: [], missing: ["wifi"] });
   });
 
+  it("maps placeName to property name, trimmed, independent of the title", () => {
+    const d = baseDraft();
+    d.place.placeName = "  Green View House  ";
+    d.listing.title = "Private room near ADTU";
+    const p = serializeProperty(d);
+    expect(p.name).toBe("Green View House");
+    // Listing.title serialization is untouched by the property name.
+    expect(d.listing.title).toBe("Private room near ADTU");
+    expect(serializeListing(d, 20).title).toBe("Private room near ADTU");
+  });
+
+  it("maps blank placeName to null", () => {
+    expect(serializeProperty(baseDraft()).name).toBeNull();
+    const d = baseDraft();
+    d.place.placeName = "   ";
+    expect(serializeProperty(d).name).toBeNull();
+  });
+
   it("maps independence and food status verbatim", () => {
     const d = baseDraft();
     d.space.independent = true;
@@ -419,6 +437,7 @@ describe("payload schema conformance (M1 — the C1 bug class)", () => {
     "has_curfew",
     "is_independent",
     "locality",
+    "name",
     "nearest_college_id",
     "nearest_workplace_id",
     "pincode",

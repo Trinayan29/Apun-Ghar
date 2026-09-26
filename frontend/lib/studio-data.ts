@@ -88,6 +88,8 @@ export interface StudioUnit {
 export interface StudioProperty {
   id: number;
   propertyType: string;
+  /** Owner-defined place identity; null for legacy unnamed properties. */
+  name: string | null;
   addressLine: string;
   locality: string | null;
   city: string | null;
@@ -177,6 +179,7 @@ export interface StudioData {
 interface PropertyRow {
   id: number;
   property_type: string;
+  name: string | null;
   address_line: string;
   locality: string | null;
   city: string | null;
@@ -193,6 +196,8 @@ function asPropertyRow(v: unknown): PropertyRow | null {
   return {
     id: r["id"],
     property_type: r["property_type"],
+    // Missing key (pre-name backend) and non-strings both mean unnamed.
+    name: typeof r["name"] === "string" ? r["name"] : null,
     address_line: r["address_line"],
     locality: typeof r["locality"] === "string" ? r["locality"] : null,
     city: typeof r["city"] === "string" ? r["city"] : null,
@@ -431,6 +436,7 @@ export function aggregateStudioData(input: StudioInput): StudioData {
     properties.push({
       id: prop.id,
       propertyType: prop.property_type,
+      name: prop.name,
       addressLine: prop.address_line,
       locality: prop.locality,
       city: prop.city,

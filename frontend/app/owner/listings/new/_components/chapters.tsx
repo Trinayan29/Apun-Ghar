@@ -279,6 +279,50 @@ export function WhereChapter({
 }
 
 /* ------------------------------------------------------------------ */
+/* Chapter 4 — What do you call this place?                            */
+/* ------------------------------------------------------------------ */
+
+export function PlaceNameChapter({
+  place,
+  onPlace,
+  error,
+}: {
+  place: Pick<PlaceDraft, "placeName">;
+  onPlace: (patch: Partial<PlaceDraft>) => void;
+  error: string | null;
+}) {
+  return (
+    <FormSection
+      id="chapter-placename"
+      kicker="Your place, your name"
+      title="What do you call this place?"
+      lede="Give this place a name so you can easily recognize it in your Owner Studio. Renters see your listing title instead — that question comes later."
+    >
+      <Field id="placename-name" label="Place name">
+        <TextField
+          id="placename-name"
+          type="text"
+          autoComplete="off"
+          placeholder="e.g. Green View House"
+          value={place.placeName}
+          onChange={(v) => onPlace({ placeName: v.slice(0, 120) })}
+        />
+      </Field>
+      <span className="mt-1 block text-right text-[12px] text-muted">
+        {place.placeName.trim().length}/120
+      </span>
+      {error && (
+        <div className="mt-3">
+          <FormError message={error} />
+        </div>
+      )}
+    </FormSection>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Chapter 5 - Tell us about the space                                 */
+/* ------------------------------------------------------------------ */
 /* Chapter 4 — Tell us about the space                                 */
 /* ------------------------------------------------------------------ */
 
@@ -439,7 +483,7 @@ export function SpaceChapter({
 }
 
 /* ------------------------------------------------------------------ */
-/* Chapter 5 — What's included?                                        */
+/* Chapter 6 — What's included?                                        */
 /* ------------------------------------------------------------------ */
 
 const AMENITY_GROUPS: { title: string; items: string[] }[] = [
@@ -524,7 +568,7 @@ export function IncludedChapter({
 }
 
 /* ------------------------------------------------------------------ */
-/* Chapter 6 — Who can stay?                                           */
+/* Chapter 7 — Who can stay?                                           */
 /* ------------------------------------------------------------------ */
 
 const AUDIENCES = [
@@ -654,7 +698,7 @@ export function WhoChapter({
 }
 
 /* ------------------------------------------------------------------ */
-/* Chapter 7 — Show the place                                          */
+/* Chapter 8 — Show the place                                          */
 /* ------------------------------------------------------------------ */
 
 function newPhotoId(): string {
@@ -868,7 +912,7 @@ export function PhotosChapter({
 }
 
 /* ------------------------------------------------------------------ */
-/* Chapter 8 — How much?                                               */
+/* Chapter 9 — How much?                                               */
 /* ------------------------------------------------------------------ */
 
 function newExtraId(): string {
@@ -1188,7 +1232,7 @@ export function PriceChapter({
 }
 
 /* ------------------------------------------------------------------ */
-/* Chapter 9 — When can someone move in?                               */
+/* Chapter 10 — When can someone move in?                               */
 /* ------------------------------------------------------------------ */
 
 const todayISO = () => {
@@ -1280,7 +1324,7 @@ export function MoveInChapter({
 }
 
 /* ------------------------------------------------------------------ */
-/* Chapter 10 — Name your listing                                      */
+/* Chapter 11 — Name your listing                                      */
 /* ------------------------------------------------------------------ */
 
 export function NameChapter({
@@ -1359,7 +1403,7 @@ export function NameChapter({
 }
 
 /* ------------------------------------------------------------------ */
-/* Chapter 11 — Preview (renter-facing; omits everything unspecified)  */
+/* Chapter 12 — Preview (renter-facing; omits everything unspecified)  */
 /* ------------------------------------------------------------------ */
 
 const BHK_DISPLAY: Record<string, string> = {
@@ -1652,7 +1696,7 @@ export function PreviewChapter({
 }
 
 /* ------------------------------------------------------------------ */
-/* Chapter 12 — Publish (frontend-only readiness boundary)             */
+/* Chapter 13 — Publish (frontend-only readiness boundary)             */
 /* ------------------------------------------------------------------ */
 
 export function PublishChapter({

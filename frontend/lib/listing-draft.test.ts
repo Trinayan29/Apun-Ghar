@@ -4,9 +4,14 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  chapterIndex,
   emptyDraft,
+  loadDrafts,
+  nextChapter,
   nextSubmitProgress,
   normalizeBackendId,
+  prevChapter,
+  validatePlaceName,
   type ListingDraft,
   type SubmitProgress,
 } from "./listing-draft";
@@ -161,5 +166,104 @@ describe("nextSubmitProgress (edit-after-success invalidation)", () => {
     expect(
       nextSubmitProgress(legacy, { pricing: { ...legacy.pricing, rent: "9000" } })
     ).toEqual({ price: false, availability: false });
+  });
+});
+
+describe("placeName draft field", () => {
+  it("defaults to an empty string", () => {
+    expect(emptyDraft("d").place.placeName).toBe("");
+  });
+
+  it("old drafts without placeName hydrate to empty string", () => {
+    const store: Record<string, string> = {};
+    const fakeWindow = {
+      localStorage: {
+        getItem: (k: string) => store[k] ?? null,
+        setItem: (k: string, v: string) => {
+          store[k] = v;
+        },
+      },
+    };
+    (globalThis as Record<string, unknown>)["window"] = fakeWindow;
+    try {
+      const legacy = emptyDraft("old") as unknown as Record<string, unknown>;
+      const place = { ...(legacy["place"] as Record<string, unknown>) };
+      delete place["placeName"];
+      legacy["place"] = place;
+      store["owner-listing-drafts:u1"] = JSON.stringify({ old: legacy });
+      expect(loadDrafts("u1")["old"].place.placeName).toBe("");
+    } finally {
+      delete (globalThis as Record<string, unknown>)["window"];
+    }
+  });
+
+  it("merge preserves an existing placeName", () => {
+    const store: Record<string, string> = {};
+    const fakeWindow = {
+      localStorage: {
+        getItem: (k: string) => store[k] ?? null,
+        setItem: (k: string, v: string) => {
+          store[k] = v;
+        },
+      },
+    };
+    (globalThis as Record<string, unknown>)["window"] = fakeWindow;
+    try {
+      const named = emptyDraft("n");
+      named.place.placeName = "Green View House";
+      store["owner-listing-drafts:u1"] = JSON.stringify({ n: named });
+      expect(loadDrafts("u1")["n"].place.placeName).toBe("Green View House");
+    } finally {
+      delete (globalThis as Record<string, unknown>)["window"];
+    }
+  });
+});
+
+describe("validatePlaceName", () => {
+  it("accepts normal names with punctuation and apostrophes", () => {
+    for (const name of [
+      "Green View House",
+      "Downtown Student House",
+      "Sunrise Residency",
+      "PG No. 4",
+      "Owner's Place",
+    ]) {
+      expect(validatePlaceName({ placeName: name })).toBeNull();
+    }
+  });
+
+  it("accepts padded names (serializer trims)", () => {
+    expect(validatePlaceName({ placeName: "  Green View House  " })).toBeNull();
+  });
+
+  it("accepts single-character names like the backend contract", () => {
+    for (const name of ["A", "X", "7", "PG", "No. 1"]) {
+      expect(validatePlaceName({ placeName: name })).toBeNull();
+    }
+  });
+
+  it("rejects blank names", () => {
+    expect(validatePlaceName({ placeName: "" })).not.toBeNull();
+    expect(validatePlaceName({ placeName: "   " })).not.toBeNull();
+  });
+
+  it("enforces the 120-character backend limit", () => {
+    expect(validatePlaceName({ placeName: "x".repeat(120) })).toBeNull();
+    expect(validatePlaceName({ placeName: "x".repeat(121) })).not.toBeNull();
+  });
+});
+
+describe("placename chapter order", () => {
+  it("sits between Where and Space", () => {
+    expect(nextChapter("where")).toBe("placename");
+    expect(nextChapter("placename")).toBe("space");
+    expect(prevChapter("space")).toBe("placename");
+    expect(prevChapter("placename")).toBe("where");
+  });
+
+  it("keeps Name your listing later in the flow", () => {
+    expect(chapterIndex("placename")).toBeGreaterThan(chapterIndex("where"));
+    expect(chapterIndex("name")).toBeGreaterThan(chapterIndex("placename"));
+    expect(chapterIndex("space")).toBeGreaterThan(chapterIndex("placename"));
   });
 });

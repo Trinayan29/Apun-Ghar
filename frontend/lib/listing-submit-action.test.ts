@@ -22,6 +22,7 @@ function submittableDraft(): ListingDraft {
   d.space.furnishing = "Fully furnished";
   d.space.audience = "Anyone";
   d.place.buildingType = "PG";
+  d.place.placeName = "Green View House";
   d.place.address = "12 Test Road";
   d.place.city = "Guwahati";
   d.place.area = { id: 7, type: "area", name: "Beltola", city: "Guwahati" };
@@ -59,6 +60,7 @@ describe("validateForSubmit", () => {
       ["what", (d) => { d.space.kind = ""; }],
       ["kind", (d) => { d.place.buildingType = ""; }],
       ["where", (d) => { d.place.area = null; }],
+      ["placename", (d) => { d.place.placeName = "  "; }],
       ["space", (d) => { d.space.furnishing = ""; }],
       ["who", (d) => { d.space.audience = ""; }],
       ["price", (d) => { d.pricing.rent = ""; }],

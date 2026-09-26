@@ -196,6 +196,8 @@ export function resolveAmenityIds(
 
 export interface PropertyPayload {
   property_type: string;
+  /** Owner-defined place identity. Never derived from listing.title. */
+  name: string | null;
   address_line: string;
   locality: string | null;
   area_location_id: number | null;
@@ -214,6 +216,9 @@ export function serializeProperty(draft: ListingDraft): PropertyPayload {
   const hasCurfew = isPg ? draft.space.pgCurfew : null;
   return {
     property_type: place.buildingType,
+    // Blank place names become null (backend treats "" and null
+    // differently); never falls back to address or listing title.
+    name: place.placeName.trim() || null,
     address_line: place.address.trim(),
     locality: place.locality.trim() || null,
     area_location_id: place.area?.id ?? null,

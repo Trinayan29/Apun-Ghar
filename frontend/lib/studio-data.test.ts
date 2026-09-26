@@ -164,6 +164,34 @@ describe("property → unit → listing hierarchy", () => {
     expect(data.properties[0].units[0].displayKind).toBe("Private room");
     expect(data.properties[1].areaName).toBe("Beltola");
   });
+
+  it("passes property names through, null stays null", () => {
+    const data = aggregateStudioData(
+      input({
+        properties: [
+          prop(1, { name: "Green View House" }),
+          prop(2, { name: null }),
+        ],
+        unitsByProperty: { 1: [unit(10, 1)], 2: [unit(20, 2)] },
+        listings: [],
+      })
+    );
+    expect(data.properties[0].name).toBe("Green View House");
+    expect(data.properties[1].name).toBeNull();
+  });
+
+  it("treats a missing name key as unnamed", () => {
+    const raw = prop(1) as Record<string, unknown>;
+    delete raw["name"];
+    const data = aggregateStudioData(
+      input({
+        properties: [raw],
+        unitsByProperty: { 1: [unit(10, 1)] },
+        listings: [],
+      })
+    );
+    expect(data.properties[0].name).toBeNull();
+  });
 });
 
 describe("rent normalization", () => {

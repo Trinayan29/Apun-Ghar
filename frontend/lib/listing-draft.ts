@@ -166,6 +166,13 @@ export interface PlaceDraft {
   buildingType: BuildingKind | "";
   /** Free text when buildingType === "OTHER". Cleared otherwise. */
   buildingOther: string;
+  /**
+   * Owner-defined human identity of the physical place ("Green View House").
+   * Maps to backend Property.name. Deliberately NOT called `title` or
+   * `name`: the draft also carries listing.title (the renter-facing offer
+   * title) and the two must never be conflated or synchronized.
+   */
+  placeName: string;
   address: string;
   locality: string;
   /** Typed catalog selection (area). Never free text. */
@@ -187,6 +194,7 @@ export type ChapterId =
   | "what"
   | "kind"
   | "where"
+  | "placename"
   | "space"
   | "included"
   | "who"
@@ -424,6 +432,7 @@ export const CHAPTERS: { id: ChapterId; title: string }[] = [
   { id: "what", title: "What are you renting?" },
   { id: "kind", title: "What kind of place is it?" },
   { id: "where", title: "Where is it?" },
+  { id: "placename", title: "What do you call this place?" },
   { id: "space", title: "Tell us about the space" },
   { id: "included", title: "What's included?" },
   { id: "who", title: "Who can stay?" },
@@ -440,6 +449,7 @@ export const IMPLEMENTED_CHAPTERS: ChapterId[] = [
   "what",
   "kind",
   "where",
+  "placename",
   "space",
   "included",
   "who",
@@ -510,6 +520,7 @@ export function emptyDraft(id: string): ListingDraft {
     place: {
       buildingType: "",
       buildingOther: "",
+      placeName: "",
       address: "",
       locality: "",
       area: null,
@@ -762,6 +773,22 @@ export function validateWhere(place: PlaceDraft): string | null {
   if (!place.city.trim()) return "City is needed — Guwahati is filled in for you.";
   if (place.pincode.trim() && !/^[1-9][0-9]{5}$/.test(place.pincode.trim()))
     return "That pincode doesn't look right — 6 digits, e.g. 781028.";
+  return null;
+}
+
+/**
+ * Owner-defined place identity ("Green View House"). Any readable text works —
+ * no pattern restriction. Distinct from validateName (the renter-facing
+ * listing title); the two are never merged or synchronized.
+ */
+export function validatePlaceName(place: Pick<PlaceDraft, "placeName">): string | null {
+  const name = place.placeName.trim();
+  // No minimum beyond non-blank (matches backend Property.name): even a
+  // single character is a legitimate name.
+  if (name.length < 1)
+    return "Give this place a name so you can recognize it — e.g. Green View House.";
+  if (name.length > 120)
+    return "Keep the place name under 120 characters.";
   return null;
 }
 
