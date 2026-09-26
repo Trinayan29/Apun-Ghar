@@ -3,7 +3,12 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/AuthProvider";
-import { ApiError, getMe } from "@/lib/api";
+import {
+  ApiError,
+  getMe,
+  type OwnerPropertyItem,
+} from "@/lib/api";
+import { usePropertyChooser } from "./_components/use-property-chooser";
 import { FormError } from "@/components/auth-ui";
 import { WizardActions, WizardShell } from "@/components/ui/wizard";
 import { ListingDraftStoreProvider, useListingDrafts } from "@/components/listing/draft-store";
@@ -18,9 +23,12 @@ import {
   CHAPTERS,
   IMPLEMENTED_CHAPTERS,
   clampChapter,
+  emptyDraft,
   nextChapter,
+  prefillPlaceFromProperty,
   prevChapter,
   suggestTitle,
+  validateChooseProperty,
   validateKind,
   validateMoveIn,
   validateName,
@@ -34,6 +42,7 @@ import {
   type ChapterId,
 } from "@/lib/listing-draft";
 import {
+  ChoosePropertyChapter,
   IncludedChapter,
   KindChapter,
   MoveInChapter,
@@ -134,6 +143,16 @@ function Wizard() {
 
   const draft = draftId ? getDraft(draftId) : null;
 
+  // Existing properties for the Choose Property chapter, loaded lazily on
+  // first visit. UID-scoping (never show another user's properties) lives
+  // inside the hook; see use-property-chooser.ts.
+  const { properties, unitsCount, propertiesError, loadProperties } =
+    usePropertyChooser(firebaseUser?.uid);
+
+  useEffect(() => {
+    if (chapter === "chooseproperty" && authChecked) void loadProperties();
+  }, [chapter, authChecked, loadProperties]);
+
   useEffect(() => {
     if (draft) setChapter(draft.currentChapter);
   }, [draft?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -151,17 +170,54 @@ function Wizard() {
     [draft, setCurrentChapter]
   );
 
+  // Property selection: existing reuses the property id and prefills a
+  // COMPLETE place replacement (never a merge); switching to "new" resets
+  // the place to fresh defaults. Dependent unit/listing ids and progress
+  // are reset alongside so a later send can never mix properties.
+  const selectExistingProperty = useCallback(
+    (item: OwnerPropertyItem) => {
+      if (!draft) return;
+      updateDraft(draft.id, {
+        propertySource: "existing",
+        backendIds: { ...draft.backendIds, propertyId: item.id, unitId: null, listingId: null },
+        submitProgress: { price: false, availability: false },
+        place: prefillPlaceFromProperty(item),
+      });
+      setFormError(null);
+    },
+    [draft, updateDraft]
+  );
+
+  const selectNewProperty = useCallback(() => {
+    if (!draft) return;
+    updateDraft(draft.id, {
+      propertySource: "new",
+      backendIds: { ...draft.backendIds, propertyId: null, unitId: null, listingId: null },
+      submitProgress: { price: false, availability: false },
+      place: emptyDraft(draft.id).place,
+    });
+    setFormError(null);
+  }, [draft, updateDraft]);
+
   const onContinue = useCallback(() => {
     if (!draft) return;
+    // Locked chapters show authoritative property data; nothing to validate.
+    const lockedPlace = draft.propertySource === "existing";
     const message =
       chapter === "what"
         ? validateWhat(draft.space)
         : chapter === "kind"
           ? validateKind(draft.place)
-          : chapter === "where"
-            ? validateWhere(draft.place)
+          : chapter === "chooseproperty"
+            ? validateChooseProperty(draft)
+            : chapter === "where"
+              ? lockedPlace
+                ? null
+                : validateWhere(draft.place)
             : chapter === "placename"
-              ? validatePlaceName(draft.place)
+              ? lockedPlace
+                ? null
+                : validatePlaceName(draft.place)
               : chapter === "space"
                 ? validateSpace(draft.space)
               : chapter === "photos"
@@ -232,6 +288,14 @@ function Wizard() {
       updateDraft(draft.id, { space: { ...draft.space, ...patch } });
     const patchPlace = (patch: Partial<typeof draft.place>) =>
       updateDraft(draft.id, { place: { ...draft.place, ...patch } });
+    // Locked-chapter display name: the live property row when loaded,
+    // otherwise the prefilled draft name (set atomically at selection).
+    const selectedPropertyName =
+      draft.propertySource === "existing"
+        ? properties?.find((p) => p.id === draft.backendIds.propertyId)?.name?.trim() ||
+          draft.place.placeName.trim() ||
+          null
+        : null;
     if (chapter === "what")
       return (
         <WhatChapter
@@ -258,10 +322,42 @@ function Wizard() {
           error={formError}
         />
       );
+    if (chapter === "chooseproperty")
+      return (
+        <ChoosePropertyChapter
+          properties={properties}
+          unitsCount={unitsCount}
+          propertiesError={propertiesError}
+          onRetryProperties={() => void loadProperties()}
+          propertySource={draft.propertySource}
+          selectedPropertyId={draft.backendIds.propertyId}
+          onSelectNew={selectNewProperty}
+          onSelectExisting={selectExistingProperty}
+          error={formError}
+        />
+      );
     if (chapter === "where")
-      return <WhereChapter place={draft.place} onPlace={patchPlace} error={formError} />;
+      return (
+        <WhereChapter
+          place={draft.place}
+          onPlace={patchPlace}
+          error={formError}
+          lockedSourceName={
+            draft.propertySource === "existing" ? selectedPropertyName : undefined
+          }
+        />
+      );
     if (chapter === "placename")
-      return <PlaceNameChapter place={draft.place} onPlace={patchPlace} error={formError} />;
+      return (
+        <PlaceNameChapter
+          place={draft.place}
+          onPlace={patchPlace}
+          error={formError}
+          lockedSourceName={
+            draft.propertySource === "existing" ? selectedPropertyName : undefined
+          }
+        />
+      );
     if (chapter === "space")
       return <SpaceChapter draft={draft} onSpace={patchSpace} error={formError} />;
     if (chapter === "included")
@@ -325,7 +421,7 @@ function Wizard() {
     // Unreachable: jump targets are clamped to furthestChapter, which only
     // advances through validated Continue steps above.
     return null;
-  }, [draft, chapter, formError, updateDraft, goChapter, handleSend, sending, submitError, sendResult]);
+  }, [draft, chapter, formError, updateDraft, goChapter, handleSend, sending, submitError, sendResult, properties, unitsCount, propertiesError, loadProperties, selectExistingProperty, selectNewProperty]);
 
   if (authError) {
     return (

@@ -10,11 +10,14 @@ import {
   nextChapter,
   nextSubmitProgress,
   normalizeBackendId,
+  prefillPlaceFromProperty,
   prevChapter,
+  validateChooseProperty,
   validatePlaceName,
   type ListingDraft,
   type SubmitProgress,
 } from "./listing-draft";
+import type { OwnerPropertyItem } from "./api";
 
 describe("normalizeBackendId", () => {
   it("accepts positive integers", () => {
@@ -265,5 +268,142 @@ describe("placename chapter order", () => {
     expect(chapterIndex("placename")).toBeGreaterThan(chapterIndex("where"));
     expect(chapterIndex("name")).toBeGreaterThan(chapterIndex("placename"));
     expect(chapterIndex("space")).toBeGreaterThan(chapterIndex("placename"));
+  });
+
+  it("sits Choose Property between Kind and Where", () => {
+    expect(nextChapter("kind")).toBe("chooseproperty");
+    expect(nextChapter("chooseproperty")).toBe("where");
+    expect(prevChapter("where")).toBe("chooseproperty");
+    expect(prevChapter("chooseproperty")).toBe("kind");
+  });
+});
+
+function ownedProperty(overrides: Partial<OwnerPropertyItem> = {}): OwnerPropertyItem {
+  return {
+    id: 42,
+    property_type: "ASSAM_TYPE_HOUSE",
+    name: "Green View House",
+    address_line: "12 Test Road",
+    locality: "Near Market",
+    city: "Guwahati",
+    pincode: "781028",
+    area_location_id: 7,
+    area_location: { id: 7, type: "area", name: "Beltola", city: "Guwahati" },
+    ...overrides,
+  };
+}
+
+describe("propertySource", () => {
+  it("defaults new drafts to new", () => {
+    expect(emptyDraft("d").propertySource).toBe("new");
+  });
+
+  it("hydrates old drafts without the field as new", () => {
+    const store: Record<string, string> = {};
+    const fakeWindow = {
+      localStorage: {
+        getItem: (k: string) => store[k] ?? null,
+        setItem: (k: string, v: string) => {
+          store[k] = v;
+        },
+      },
+    };
+    (globalThis as Record<string, unknown>)["window"] = fakeWindow;
+    try {
+      const legacy = emptyDraft("old") as unknown as Record<string, unknown>;
+      delete legacy["propertySource"];
+      store["owner-listing-drafts:u1"] = JSON.stringify({ old: legacy });
+      expect(loadDrafts("u1")["old"].propertySource).toBe("new");
+      const existing = emptyDraft("e");
+      existing.propertySource = "existing";
+      store["owner-listing-drafts:u2"] = JSON.stringify({ e: existing });
+      expect(loadDrafts("u2")["e"].propertySource).toBe("existing");
+    } finally {
+      delete (globalThis as Record<string, unknown>)["window"];
+    }
+  });
+
+  it("a created propertyId alone never implies existing", () => {
+    // BackendIds.propertyId is also set when THIS flow created the
+    // property; only the flag is authoritative.
+    const d = emptyDraft("d");
+    d.backendIds = { propertyId: 10, unitId: null, listingId: null };
+    expect(d.propertySource).toBe("new");
+    expect(validateChooseProperty(d)).toBeNull();
+  });
+});
+
+describe("validateChooseProperty", () => {
+  it("passes for new-property flow", () => {
+    expect(validateChooseProperty(emptyDraft("d"))).toBeNull();
+  });
+
+  it("passes for an existing property with a stored id", () => {
+    const d = emptyDraft("d");
+    d.propertySource = "existing";
+    d.backendIds = { propertyId: 42, unitId: null, listingId: null };
+    expect(validateChooseProperty(d)).toBeNull();
+  });
+
+  it("fails for existing without a stored id", () => {
+    const d = emptyDraft("d");
+    d.propertySource = "existing";
+    expect(validateChooseProperty(d)).not.toBeNull();
+  });
+});
+
+describe("prefillPlaceFromProperty", () => {
+  it("maps every property-derived field, preserving the area object", () => {
+    const place = prefillPlaceFromProperty(ownedProperty());
+    expect(place).toMatchObject({
+      buildingType: "ASSAM_TYPE_HOUSE",
+      buildingOther: "",
+      placeName: "Green View House",
+      address: "12 Test Road",
+      locality: "Near Market",
+      city: "Guwahati",
+      pincode: "781028",
+      college: null,
+      workplace: null,
+      gateTime: "",
+    });
+    expect(place.area).toEqual({
+      id: 7,
+      type: "area",
+      name: "Beltola",
+      city: "Guwahati",
+    });
+  });
+
+  it("tolerates unnamed properties and missing area", () => {
+    const place = prefillPlaceFromProperty(
+      ownedProperty({ name: null, area_location: null, locality: null, city: null, pincode: null })
+    );
+    expect(place.placeName).toBe("");
+    expect(place.area).toBeNull();
+    expect(place.locality).toBe("");
+    expect(place.city).toBe("");
+  });
+
+  it("falls back to OTHER with empty detail for unknown backend types", () => {
+    const place = prefillPlaceFromProperty(
+      ownedProperty({ property_type: "STUDIO_BUILDING" })
+    );
+    expect(place.buildingType).toBe("OTHER");
+    // The raw enum must never reach renter-facing listing text.
+    expect(place.buildingOther).toBe("");
+  });
+});
+
+describe("property switch invalidation", () => {
+  it("changing propertyId resets price/availability progress", () => {
+    const d = emptyDraft("d");
+    d.backendIds = { propertyId: 10, unitId: 20, listingId: 30 };
+    d.submitProgress = { price: true, availability: true };
+    expect(
+      nextSubmitProgress(d, {
+        backendIds: { propertyId: 42, unitId: null, listingId: null },
+      })
+    ).toEqual({ price: false, availability: false });
   });
 });

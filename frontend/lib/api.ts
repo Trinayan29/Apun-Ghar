@@ -163,6 +163,7 @@ export interface OwnerPropertyItem {
   address_line: string;
   locality: string | null;
   city: string | null;
+  pincode: string | null;
   area_location_id: number | null;
   area_location: {
     id: number;

@@ -12,7 +12,7 @@
  * Later chapters extend these interfaces; nothing here needs rewriting.
  */
 
-import type { LocationItem } from "@/lib/api";
+import type { LocationItem, OwnerPropertyItem } from "@/lib/api";
 
 /* ------------------------------------------------------------------ */
 /* Rental kind (UX-level; mapped to backend unit fields at submit time) */
@@ -193,6 +193,7 @@ export interface PlaceDraft {
 export type ChapterId =
   | "what"
   | "kind"
+  | "chooseproperty"
   | "where"
   | "placename"
   | "space"
@@ -388,8 +389,16 @@ export function draftSliceEqual(a: unknown, b: unknown): boolean {
  * value-identical) patches preserve both. Never invents completion.
  */
 export function nextSubmitProgress(
-  existing: Pick<ListingDraft, "pricing" | "availability" | "submitProgress">,
-  patch: Partial<Pick<ListingDraft, "pricing" | "availability">>
+  existing: Pick<
+    ListingDraft,
+    "pricing" | "availability" | "submitProgress" | "backendIds"
+  >,
+  patch: Partial<
+    Pick<
+      ListingDraft,
+      "pricing" | "availability" | "submitProgress" | "backendIds"
+    >
+  >
 ): SubmitProgress {
   const current: SubmitProgress = existing.submitProgress ?? {
     price: false,
@@ -407,6 +416,16 @@ export function nextSubmitProgress(
     !draftSliceEqual(existing.availability, patch.availability)
   ) {
     progress = { ...progress, availability: false };
+  }
+  if (
+    patch.backendIds !== undefined &&
+    normalizeBackendId(patch.backendIds.propertyId) !==
+      normalizeBackendId(existing.backendIds?.propertyId)
+  ) {
+    // Switching properties orphans any unit/listing submitted under the old
+    // one: force both id-tied steps to resubmit. Callers also clear the
+    // dependent unit/listing ids; this is the backstop.
+    progress = { price: false, availability: false };
   }
   return progress;
 }
@@ -431,6 +450,7 @@ export interface ListingDraft {
 export const CHAPTERS: { id: ChapterId; title: string }[] = [
   { id: "what", title: "What are you renting?" },
   { id: "kind", title: "What kind of place is it?" },
+  { id: "chooseproperty", title: "Choose a property" },
   { id: "where", title: "Where is it?" },
   { id: "placename", title: "What do you call this place?" },
   { id: "space", title: "Tell us about the space" },
@@ -448,6 +468,7 @@ export const CHAPTERS: { id: ChapterId; title: string }[] = [
 export const IMPLEMENTED_CHAPTERS: ChapterId[] = [
   "what",
   "kind",
+  "chooseproperty",
   "where",
   "placename",
   "space",
@@ -501,6 +522,7 @@ export function emptyDraft(id: string): ListingDraft {
     updatedAt: Date.now(),
     currentChapter: "what",
     furthestChapter: "what",
+    propertySource: "new",
     space: {
       kind: "",
       detail: "",
@@ -777,6 +799,53 @@ export function validateWhere(place: PlaceDraft): string | null {
 }
 
 /**
+ * The choose-property gate: "new" always passes (Where/placename collect
+ * the data); "existing" requires a stored property id. Never infers the
+ * source from backendIds — see PropertySource.
+ */
+export function validateChooseProperty(draft: Pick<ListingDraft, "propertySource" | "backendIds">): string | null {
+  if (draft.propertySource === "existing" && normalizeBackendId(draft.backendIds?.propertyId) === null)
+    return "Choose one of your properties, or create a new one.";
+  return null;
+}
+
+/**
+ * Complete place replacement from a selected existing property. Returns a
+ * FULL PlaceDraft (callers overwrite, never merge) so no stale address,
+ * name, type, or area survives a switch. Unknown backend types fall back
+ * to OTHER with the raw type preserved as detail, keeping validation
+ * green without inventing data.
+ */
+export function prefillPlaceFromProperty(item: OwnerPropertyItem): PlaceDraft {
+  const knownTypes: BuildingKind[] = ["PG", "HOSTEL", "APARTMENT_FLAT", "INDEPENDENT_HOUSE", "ASSAM_TYPE_HOUSE"];
+  const buildingType: BuildingKind = (knownTypes as string[]).includes(item.property_type)
+    ? (item.property_type as BuildingKind)
+    : "OTHER";
+  return {
+    buildingType,
+    // Unknown backend types fall back to OTHER with an empty detail: the
+    // raw enum must never leak into renter-facing listing text via the
+    // buildingOther fold-in. The owner then answers Kind explicitly, which
+    // keeps validation honest without inventing data.
+    buildingOther: "",
+    placeName: item.name ?? "",
+    address: item.address_line,
+    locality: item.locality ?? "",
+    area: item.area_location
+      ? { id: item.area_location.id, type: "area", name: item.area_location.name, city: item.area_location.city }
+      : null,
+    city: item.city ?? "",
+    pincode: item.pincode ?? "",
+    // Nearby-college/workplace answers belong to this listing flow, not the
+    // property: a fresh selection starts unanswered rather than inheriting
+    // another listing's context.
+    college: null,
+    workplace: null,
+    gateTime: "",
+  };
+}
+
+/**
  * Owner-defined place identity ("Green View House"). Any readable text works —
  * no pattern restriction. Distinct from validateName (the renter-facing
  * listing title); the two are never merged or synchronized.
@@ -815,6 +884,10 @@ export function loadDrafts(uid: string): Record<string, ListingDraft> {
       out[id] = {
         ...fresh,
         ...d,
+        // Pre-feature drafts lack propertySource; corrupt values fall back
+        // to "new" (today's behavior) rather than a locked path.
+        propertySource:
+          (d as ListingDraft).propertySource === "existing" ? "existing" : "new",
         space: {
           ...fresh.space,
           ...(d.space ?? {}),

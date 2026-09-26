@@ -24,6 +24,7 @@ import {
   type Transport,
 } from "./listing-submit-flow";
 import {
+  validateChooseProperty,
   validateKind,
   validateMoveIn,
   validateName,
@@ -51,11 +52,15 @@ export interface SubmitBlocker {
  * selection ("included") has no validator — amenities are optional.
  */
 export function validateForSubmit(draft: ListingDraft): SubmitBlocker | null {
+  // An existing property's Where/Name answers are authoritative backend
+  // data, not user input: skip those validators like the locked chapters do.
+  const lockedPlace = draft.propertySource === "existing";
   const checks: [ChapterId, string | null][] = [
     ["what", validateWhat(draft.space)],
     ["kind", validateKind(draft.place)],
-    ["where", validateWhere(draft.place)],
-    ["placename", validatePlaceName(draft.place)],
+    ["chooseproperty", validateChooseProperty(draft)],
+    ["where", lockedPlace ? null : validateWhere(draft.place)],
+    ["placename", lockedPlace ? null : validatePlaceName(draft.place)],
     ["space", validateSpace(draft.space)],
     ["who", validateWho(draft.space, draft.place)],
     ["photos", validatePhotos(draft.photos)],

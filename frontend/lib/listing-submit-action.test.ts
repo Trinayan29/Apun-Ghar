@@ -74,6 +74,24 @@ describe("validateForSubmit", () => {
     }
   });
 
+  it("skips Where/Name validation for an existing property", () => {
+    const d = submittableDraft();
+    d.propertySource = "existing";
+    d.backendIds = { propertyId: 42, unitId: null, listingId: null };
+    d.place.address = "";
+    d.place.area = null;
+    d.place.placeName = "";
+    expect(validateForSubmit(d)).toBeNull();
+  });
+
+  it("still validates other chapters on the existing path", () => {
+    const d = submittableDraft();
+    d.propertySource = "existing";
+    d.backendIds = { propertyId: 42, unitId: null, listingId: null };
+    d.pricing.rent = "";
+    expect(validateForSubmit(d)).toMatchObject({ step: "price" });
+  });
+
   it("flags too many photos at the photos step", () => {
     const d = submittableDraft();
     d.photos = Array.from({ length: 16 }, (_, i) => ({

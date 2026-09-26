@@ -32,10 +32,12 @@ import {
   type PhotoDraft,
   type PlaceDraft,
   type PricingDraft,
+  type PropertySource,
   type SpaceDraft,
 } from "@/lib/listing-draft";
 import { submitSuccessMessage } from "@/lib/listing-submit-action";
 import type { SubmitResult } from "@/lib/listing-submit-flow";
+import type { OwnerPropertyItem } from "@/lib/api";
 
 /* ------------------------------------------------------------------ */
 /* Chapter 1 — What are you renting?                                   */
@@ -181,6 +183,133 @@ export function KindChapter({
 }
 
 /* ------------------------------------------------------------------ */
+/* Chapter — Choose a property (existing place vs new place)           */
+/* ------------------------------------------------------------------ */
+
+function propertyTypeLabel(propertyType: string): string {
+  return BUILDING_KINDS.find((k) => k.value === propertyType)?.title ?? propertyType;
+}
+
+function propertyLocationLine(item: OwnerPropertyItem): string | null {
+  const parts = [
+    item.locality?.trim() || item.area_location?.name.trim() || "",
+    item.city?.trim() || "",
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(", ") : null;
+}
+
+export function ChoosePropertyChapter({
+  properties,
+  unitsCount,
+  propertiesError,
+  onRetryProperties,
+  propertySource,
+  selectedPropertyId,
+  onSelectNew,
+  onSelectExisting,
+  error,
+}: {
+  /** Null while the owner's properties are still loading. */
+  properties: OwnerPropertyItem[] | null;
+  /** Unit counts by property id; missing entries hide the count line. */
+  unitsCount: Record<number, number>;
+  propertiesError: string | null;
+  onRetryProperties: () => void;
+  propertySource: PropertySource;
+  selectedPropertyId: number | null;
+  onSelectNew: () => void;
+  onSelectExisting: (item: OwnerPropertyItem) => void;
+  error: string | null;
+}) {
+  const selectedCard = (selected: boolean) =>
+    `w-full rounded-2xl border p-4 text-left transition active:scale-[0.99] ${
+      selected
+        ? "border-brand-600 bg-brand-50"
+        : "border-line bg-white"
+    }`;
+  return (
+    <FormSection
+      id="chapter-chooseproperty"
+      kicker="One listing, one place"
+      title="Where does this listing belong?"
+      lede="Reuse a place you already manage, or start a brand-new property."
+    >
+      {properties === null && !propertiesError && (
+        <p className="text-[14px] text-muted" role="status">
+          Loading your properties…
+        </p>
+      )}
+      {propertiesError && (
+        <div className="mb-3">
+          <FormError message={propertiesError} />
+          <button
+            type="button"
+            onClick={onRetryProperties}
+            className="mt-2 flex min-h-[48px] w-full items-center justify-center rounded-xl border border-line bg-white px-5 text-[15px] font-semibold"
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {properties !== null && (
+        <div className="space-y-2.5" role="group" aria-label="Choose a property">
+          {properties.map((item) => {
+            const selected =
+              propertySource === "existing" && selectedPropertyId === item.id;
+            const name = item.name?.trim() || item.address_line.trim();
+            const location = propertyLocationLine(item);
+            const units = unitsCount[item.id];
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onSelectExisting(item)}
+                aria-pressed={selected}
+                className={selectedCard(selected)}
+              >
+                <span className="block truncate text-[15.5px] font-bold" title={name}>
+                  {name}
+                </span>
+                <span className="mt-0.5 block text-[13px] text-muted">
+                  {propertyTypeLabel(item.property_type)}
+                  {location ? ` · ${location}` : ""}
+                </span>
+                {typeof units === "number" && (
+                  <span className="mt-0.5 block text-[13px] text-muted">
+                    {units === 1 ? "1 unit" : `${units} units`}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            onClick={onSelectNew}
+            aria-pressed={propertySource === "new"}
+            className={selectedCard(propertySource === "new")}
+          >
+            <span className="block text-[15.5px] font-bold">
+              <span aria-hidden className="mr-1.5">
+                +
+              </span>
+              Create a new property
+            </span>
+            <span className="mt-0.5 block text-[13px] text-muted">
+              Add a new address and name in the next steps.
+            </span>
+          </button>
+        </div>
+      )}
+      {error && (
+        <div className="mt-4">
+          <FormError message={error} />
+        </div>
+      )}
+    </FormSection>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* Chapter 3 — Where is it?                                            */
 /* ------------------------------------------------------------------ */
 
@@ -188,12 +317,50 @@ export function WhereChapter({
   place,
   onPlace,
   error,
+  lockedSourceName,
 }: {
   place: PlaceDraft;
   onPlace: (patch: Partial<PlaceDraft>) => void;
   error: string | null;
+  /**
+   * When set, the chapter renders the selected property's location
+   * read-only instead of inputs: the address belongs to the property and
+   * is authoritative, not entered in this flow.
+   */
+  lockedSourceName?: string | null;
 }) {
   const set = (patch: Partial<PlaceDraft>) => onPlace(patch);
+  if (lockedSourceName != null) {
+    const areaLine = [
+      place.locality.trim() || place.area?.name.trim() || "",
+      place.city.trim(),
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return (
+      <FormSection
+        id="chapter-where"
+        kicker="Finding you"
+        title="Where's your place?"
+        lede="This location comes from your selected property and isn't edited here."
+      >
+        <div className="rounded-2xl border border-line bg-white p-4">
+          <p className="text-[15px] font-bold">{place.address.trim() || "Address on file"}</p>
+          {areaLine && (
+            <p className="mt-1 text-[13.5px] text-muted">{areaLine}</p>
+          )}
+          {place.pincode.trim() && (
+            <p className="mt-1 text-[13.5px] text-muted">{place.pincode.trim()}</p>
+          )}
+        </div>
+        {error && (
+          <div className="mt-4">
+            <FormError message={error} />
+          </div>
+        )}
+      </FormSection>
+    );
+  }
   return (
     <FormSection
       id="chapter-where"
@@ -286,11 +453,39 @@ export function PlaceNameChapter({
   place,
   onPlace,
   error,
+  lockedSourceName,
 }: {
   place: Pick<PlaceDraft, "placeName">;
   onPlace: (patch: Partial<PlaceDraft>) => void;
   error: string | null;
+  /**
+   * When set, the selected property's name renders read-only: this
+   * listing is added to that property, so the name isn't asked again.
+   */
+  lockedSourceName?: string | null;
 }) {
+  if (lockedSourceName != null) {
+    return (
+      <FormSection
+        id="chapter-placename"
+        kicker="Your place, your name"
+        title="What do you call this place?"
+        lede="This listing will be added to this property."
+      >
+        <div className="rounded-2xl border border-line bg-white p-4">
+          <p className="text-[12px] font-bold uppercase tracking-[0.12em] text-muted">
+            Property
+          </p>
+          <p className="mt-1 text-[16px] font-bold">{lockedSourceName}</p>
+        </div>
+        {error && (
+          <div className="mt-3">
+            <FormError message={error} />
+          </div>
+        )}
+      </FormSection>
+    );
+  }
   return (
     <FormSection
       id="chapter-placename"

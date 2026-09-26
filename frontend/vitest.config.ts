@@ -12,6 +12,7 @@ export default defineConfig({
     include: [
       "lib/**/*.test.ts",
       "app/owner/dashboard/_components/*.test.tsx",
+      "app/owner/listings/new/_components/*.test.tsx",
     ],
   },
 });

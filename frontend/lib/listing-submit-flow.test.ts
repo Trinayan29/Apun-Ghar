@@ -88,6 +88,24 @@ describe("successful Property -> Unit -> Listing creation", () => {
     });
   });
 
+  it("reuses an existing property without POSTing a new one", async () => {
+    const { calls, transport } = okTransport({ property: 42, unit: 20, listing: 30 });
+    const draft = validDraft();
+    draft.propertySource = "existing";
+    draft.backendIds = { propertyId: 42, unitId: null, listingId: null };
+    const result = await submitListingDraft(draft, transport);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ids).toEqual({ propertyId: 42, unitId: 20, listingId: 30 });
+    // No property creation: unit goes straight under property 42.
+    expect(calls.map((c) => c.path)).toEqual([
+      "/api/v1/owner/properties/42/units",
+      "/api/v1/owner/listings",
+      "/api/v1/owner/listings/30/price-components",
+      "/api/v1/owner/listings/30/availability",
+    ]);
+  });
+
   it("reports pending amenities explicitly instead of dropping them", async () => {
     const { transport } = okTransport({ property: 10, unit: 20, listing: 30 });
     const draft = validDraft();
