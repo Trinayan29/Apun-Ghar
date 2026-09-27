@@ -820,7 +820,10 @@ def _check_publication_guards(db: Session, listing: Listing) -> None:
         prop is None
         or not (prop.address_line or "").strip()
         or not (prop.city or "").strip()
-        or prop.area_location_id is None
+        or (
+            prop.area_location_id is None
+            and not (prop.area_custom_name or "").strip()
+        )
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

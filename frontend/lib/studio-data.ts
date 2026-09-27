@@ -94,6 +94,8 @@ export interface StudioProperty {
   locality: string | null;
   city: string | null;
   areaName: string | null;
+  /** Owner-entered area for areas missing from the catalog. */
+  areaCustomName: string | null;
   units: StudioUnit[];
 }
 
@@ -180,6 +182,7 @@ interface PropertyRow {
   id: number;
   property_type: string;
   name: string | null;
+  areaCustomName: string | null;
   address_line: string;
   locality: string | null;
   city: string | null;
@@ -205,6 +208,8 @@ function asPropertyRow(v: unknown): PropertyRow | null {
       area && typeof area === "object" && typeof (area as Record<string, unknown>)["name"] === "string"
         ? ((area as Record<string, unknown>)["name"] as string)
         : null,
+    areaCustomName:
+      typeof r["area_custom_name"] === "string" ? r["area_custom_name"] : null,
   };
 }
 
@@ -441,6 +446,7 @@ export function aggregateStudioData(input: StudioInput): StudioData {
       locality: prop.locality,
       city: prop.city,
       areaName: prop.areaName,
+      areaCustomName: prop.areaCustomName,
       units,
     });
   }

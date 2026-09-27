@@ -201,6 +201,7 @@ export interface PropertyPayload {
   address_line: string;
   locality: string | null;
   area_location_id: number | null;
+  area_custom_name: string | null;
   city: string | null;
   pincode: string | null;
   gate_closing_time: string | null;
@@ -222,6 +223,8 @@ export function serializeProperty(draft: ListingDraft): PropertyPayload {
     address_line: place.address.trim(),
     locality: place.locality.trim() || null,
     area_location_id: place.area?.id ?? null,
+    // Canonical area wins: a selected catalog area always clears custom text.
+    area_custom_name: place.area ? null : place.areaCustomName.trim() || null,
     city: place.city.trim() || null,
     pincode: place.pincode.trim() || null,
     // One gate-time source of truth: only a Yes curfew carries a time.

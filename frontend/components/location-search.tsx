@@ -26,6 +26,7 @@ export function LocationSearchField({
   disabled,
   onSelect,
   onClear,
+  onUseCustomArea,
 }: {
   kind: LocationKind;
   label: string;
@@ -34,6 +35,9 @@ export function LocationSearchField({
   disabled?: boolean;
   onSelect: (loc: LocationItem) => void;
   onClear: () => void;
+  /** Area-only opt-in: offer the typed query as a custom area name when
+   *  the catalog has no match. Never used for college/workplace. */
+  onUseCustomArea?: (name: string) => void;
 }) {
   const inputId = `${kind}-location-search`;
   const [query, setQuery] = useState("");
@@ -118,10 +122,27 @@ export function LocationSearchField({
         </p>
       )}
 
-      {showEmpty && (
+      {showEmpty && !onUseCustomArea && (
         <p className="mt-2 text-[13.5px] text-muted">
           No matches found. You can skip — this stays optional.
         </p>
+      )}
+
+      {showEmpty && onUseCustomArea && (
+        <div className="mt-2 rounded-xl border border-line bg-white px-3.5 py-3">
+          <p className="text-[13.5px] text-muted">No matches found.</p>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              const name = query.trim();
+              if (name) onUseCustomArea(name);
+            }}
+            className="mt-2 flex min-h-[44px] w-full items-center justify-center rounded-xl bg-brand-600 px-4 text-[14px] font-bold text-white transition active:scale-[0.98] disabled:opacity-60"
+          >
+            Use “{query.trim()}”
+          </button>
+        </div>
       )}
 
       {status === "error" && (

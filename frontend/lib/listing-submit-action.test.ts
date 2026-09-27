@@ -74,6 +74,20 @@ describe("validateForSubmit", () => {
     }
   });
 
+  it("accepts a custom area without a canonical one", () => {
+    const d = submittableDraft();
+    d.place.area = null;
+    d.place.areaCustomName = "Jyotikuchi";
+    expect(validateForSubmit(d)).toBeNull();
+  });
+
+  it("rejects neither canonical nor custom area", () => {
+    const d = submittableDraft();
+    d.place.area = null;
+    d.place.areaCustomName = "   ";
+    expect(validateForSubmit(d)).toMatchObject({ step: "where" });
+  });
+
   it("skips Where/Name validation for an existing property", () => {
     const d = submittableDraft();
     d.propertySource = "existing";

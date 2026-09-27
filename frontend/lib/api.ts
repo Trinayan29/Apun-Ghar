@@ -165,6 +165,8 @@ export interface OwnerPropertyItem {
   city: string | null;
   pincode: string | null;
   area_location_id: number | null;
+  /** Owner-entered area for areas missing from the catalog. Null when a canonical area is set. */
+  area_custom_name: string | null;
   area_location: {
     id: number;
     type: string;

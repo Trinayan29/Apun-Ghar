@@ -44,6 +44,7 @@ class PropertyCreate(BaseModel):
     name: str | None = Field(default=None, max_length=120)
     locality: str | None = Field(default=None, max_length=2000)
     area_location_id: int | None = None
+    area_custom_name: str | None = Field(default=None, max_length=200)
     city: str | None = Field(default=None, max_length=100)
     pincode: str | None = Field(default=None, pattern=PINCODE_RE)
     gate_closing_time: time | None = None
@@ -64,7 +65,7 @@ class PropertyCreate(BaseModel):
             raise ValueError("address_line cannot be blank")
         return v
 
-    @field_validator("city", "locality", "name")
+    @field_validator("city", "locality", "name", "area_custom_name")
     @classmethod
     def _strip_city_locality(
         cls, v: str | None, info: ValidationInfo
@@ -88,6 +89,7 @@ class PropertyUpdate(BaseModel):
     name: str | None = Field(default=None, max_length=120)
     locality: str | None = Field(default=None, max_length=2000)
     area_location_id: int | None = None
+    area_custom_name: str | None = Field(default=None, max_length=200)
     city: str | None = Field(default=None, max_length=100)
     pincode: str | None = Field(default=None, pattern=PINCODE_RE)
     gate_closing_time: time | None = None
@@ -110,7 +112,7 @@ class PropertyUpdate(BaseModel):
             raise ValueError("address_line cannot be blank")
         return v
 
-    @field_validator("city", "locality", "name")
+    @field_validator("city", "locality", "name", "area_custom_name")
     @classmethod
     def _strip_city_locality(
         cls, v: str | None, info: ValidationInfo
@@ -128,6 +130,7 @@ class PropertyRead(BaseModel):
     name: str | None
     locality: str | None
     area_location_id: int | None
+    area_custom_name: str | None
     area_location: LocationRead | None
     city: str
     pincode: str | None
@@ -191,6 +194,15 @@ def _validate_location_refs(db: Session, provided: dict) -> None:
         )
 
 
+def _prefer_canonical_area(provided: dict, existing_area_location_id: int | None = None) -> None:
+    """Canonical area wins: when the effective area_location_id is set,
+    any custom area text is cleared so the two representations never
+    coexist on one property."""
+    area_id = provided.get("area_location_id", existing_area_location_id)
+    if area_id is not None:
+        provided["area_custom_name"] = None
+
+
 def _owned_or_404(db: Session, property_id: int, owner_id: int) -> Property:
     prop = db.get(Property, property_id)
     if prop is None or prop.owner_user_id != owner_id:
@@ -208,6 +220,7 @@ def create_property(
 ):
     provided = payload.model_dump(exclude_unset=True)
     _ensure_not_null_fields(provided)
+    _prefer_canonical_area(provided)
     _validate_geo(provided.get("latitude"), provided.get("longitude"))
     _validate_location_refs(db, provided)
     _validate_curfew(
@@ -263,6 +276,7 @@ def update_owner_property(
     prop = _owned_or_404(db, property_id, user.id)
     provided = payload.model_dump(exclude_unset=True)
     _ensure_not_null_fields(provided)
+    _prefer_canonical_area(provided, prop.area_location_id)
     _validate_location_refs(db, provided)
     _validate_curfew(
         provided.get("has_curfew", prop.has_curfew),

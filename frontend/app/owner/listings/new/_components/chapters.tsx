@@ -192,7 +192,10 @@ function propertyTypeLabel(propertyType: string): string {
 
 function propertyLocationLine(item: OwnerPropertyItem): string | null {
   const parts = [
-    item.locality?.trim() || item.area_location?.name.trim() || "",
+    item.locality?.trim() ||
+      item.area_location?.name.trim() ||
+      item.area_custom_name?.trim() ||
+      "",
     item.city?.trim() || "",
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(", ") : null;
@@ -332,7 +335,10 @@ export function WhereChapter({
   const set = (patch: Partial<PlaceDraft>) => onPlace(patch);
   if (lockedSourceName != null) {
     const areaLine = [
-      place.locality.trim() || place.area?.name.trim() || "",
+      place.locality.trim() ||
+      place.area?.name.trim() ||
+      place.areaCustomName.trim() ||
+      "",
       place.city.trim(),
     ]
       .filter(Boolean)
@@ -369,14 +375,37 @@ export function WhereChapter({
       lede="Start with the area — most renters search by neighbourhood, not street name."
     >
       <div className="space-y-4">
-        <LocationSearchField
-          kind="area"
-          label="Area"
-          placeholder="e.g. Beltola"
-          value={place.area}
-          onSelect={(area) => set({ area })}
-          onClear={() => set({ area: null })}
-        />
+        {place.areaCustomName.trim() ? (
+          <div>
+            <Field id="where-area" label="Area">
+              <div className="flex min-h-[52px] items-center justify-between gap-2 rounded-xl border border-line bg-white px-4">
+                <span className="min-w-0 flex-1 truncate text-[15px] font-semibold">
+                  {place.areaCustomName.trim()}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => set({ areaCustomName: "" })}
+                  className="flex min-h-[44px] shrink-0 items-center px-1 text-[13px] font-bold text-brand-700 underline disabled:opacity-60"
+                >
+                  Clear
+                </button>
+              </div>
+            </Field>
+            <p className="mt-2 text-[13.5px] text-muted">
+              Custom area — saved with your property as entered.
+            </p>
+          </div>
+        ) : (
+          <LocationSearchField
+            kind="area"
+            label="Area"
+            placeholder="e.g. Beltola"
+            value={place.area}
+            onSelect={(area) => set({ area, areaCustomName: "" })}
+            onClear={() => set({ area: null })}
+            onUseCustomArea={(name) => set({ area: null, areaCustomName: name })}
+          />
+        )}
         <Field id="where-address" label="Building address">
           <TextField
             id="where-address"
@@ -1649,7 +1678,12 @@ export function PreviewChapter({
   const layoutLabel = BHK_DISPLAY[space.kind] ?? "";
   const buildingTitle =
     BUILDING_KINDS.find((b) => b.value === place.buildingType)?.title ?? "";
-  const locationLine = [place.locality, place.area?.name, place.city]
+  const locationLine = [
+    place.locality,
+    place.area?.name,
+    place.areaCustomName,
+    place.city,
+  ]
     .map((s) => s?.trim() ?? "")
     .filter(Boolean)
     .join(", ");

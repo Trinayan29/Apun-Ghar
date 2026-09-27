@@ -232,6 +232,7 @@ def test_create_response_shape(client, engine):
         "name",
         "locality",
         "area_location_id",
+        "area_custom_name",
         "area_location",
         "city",
         "pincode",
@@ -867,3 +868,160 @@ def test_invalid_patch_leaves_db_unchanged(client, engine):
     assert data["total_floors"] == 3
     assert data["latitude"] == 26.1
     assert data["longitude"] == 91.7
+
+def test_create_with_custom_area_201(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties",
+        json=valid_payload(area_custom_name="  Jyotikuchi  "),
+    )
+    assert res.status_code == 201, res.text
+    data = res.json()
+    assert data["area_custom_name"] == "Jyotikuchi"
+    assert data["area_location_id"] is None
+    assert data["area_location"] is None
+
+
+def test_create_canonical_area_stores_no_custom_text(client, engine):
+    provision_owner(client, UID)
+    area_id = insert_location(engine, "area", "Beltola")
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload(area_location_id=area_id)
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["area_custom_name"] is None
+
+
+def test_create_both_area_fields_canonical_wins(client, engine):
+    provision_owner(client, UID)
+    area_id = insert_location(engine, "area", "Beltola")
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties",
+        json=valid_payload(
+            area_location_id=area_id, area_custom_name="Jyotikuchi"
+        ),
+    )
+    assert res.status_code == 201, res.text
+    data = res.json()
+    assert data["area_location_id"] == area_id
+    assert data["area_custom_name"] is None
+
+
+def test_create_blank_custom_area_422(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload(area_custom_name="   ")
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_create_custom_area_too_long_422(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload(area_custom_name="x" * 201)
+    )
+    assert res.status_code == 422, res.text
+
+
+def test_create_neither_area_ok(client, engine):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/properties", json=valid_payload()
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["area_location_id"] is None
+    assert res.json()["area_custom_name"] is None
+
+
+def test_patch_custom_area_onto_unnamed_property(client, engine):
+    provision_owner(client, UID)
+    pid = (
+        authed(client, uid=UID)
+        .post("/api/v1/owner/properties", json=valid_payload())
+        .json()["id"]
+    )
+    res = authed(client, uid=UID).patch(
+        f"/api/v1/owner/properties/{pid}", json={"area_custom_name": "Jyotikuchi"}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["area_custom_name"] == "Jyotikuchi"
+    assert res.json()["area_location_id"] is None
+
+
+def test_patch_canonical_area_clears_custom(client, engine):
+    provision_owner(client, UID)
+    pid = (
+        authed(client, uid=UID)
+        .post(
+            "/api/v1/owner/properties",
+            json=valid_payload(area_custom_name="Jyotikuchi"),
+        )
+        .json()["id"]
+    )
+    area_id = insert_location(engine, "area", "Beltola")
+    res = authed(client, uid=UID).patch(
+        f"/api/v1/owner/properties/{pid}", json={"area_location_id": area_id}
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["area_location_id"] == area_id
+    assert data["area_custom_name"] is None
+
+
+def test_patch_custom_area_keeps_existing_canonical(client, engine):
+    provision_owner(client, UID)
+    area_id = insert_location(engine, "area", "Beltola")
+    pid = (
+        authed(client, uid=UID)
+        .post(
+            "/api/v1/owner/properties",
+            json=valid_payload(area_location_id=area_id),
+        )
+        .json()["id"]
+    )
+    res = authed(client, uid=UID).patch(
+        f"/api/v1/owner/properties/{pid}", json={"area_custom_name": "Jyotikuchi"}
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["area_location_id"] == area_id
+    assert data["area_custom_name"] is None
+
+
+def test_patch_custom_area_null_clears(client, engine):
+    provision_owner(client, UID)
+    pid = (
+        authed(client, uid=UID)
+        .post(
+            "/api/v1/owner/properties",
+            json=valid_payload(area_custom_name="Jyotikuchi"),
+        )
+        .json()["id"]
+    )
+    res = authed(client, uid=UID).patch(
+        f"/api/v1/owner/properties/{pid}", json={"area_custom_name": None}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["area_custom_name"] is None
+
+
+def test_create_custom_area_matching_catalog_stores_text(client, engine):
+    from app.models import Location
+
+    provision_owner(client, UID)
+    db = sessionmaker(bind=engine)()
+    try:
+        db.add(Location(type="area", name="Jyotikuchi", city="Guwahati"))
+        db.commit()
+        res = authed(client, uid=UID).post(
+            "/api/v1/owner/properties",
+            json=valid_payload(area_custom_name="jyotikuchi"),
+        )
+        assert res.status_code == 201, res.text
+        assert res.json()["area_custom_name"] == "jyotikuchi"
+    finally:
+        db.query(Location).filter(
+            Location.type == "area", Location.name == "Jyotikuchi"
+        ).delete(synchronize_session=False)
+        db.commit()
+        db.close()

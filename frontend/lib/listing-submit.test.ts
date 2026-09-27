@@ -239,6 +239,33 @@ describe("property mapping", () => {
     expect(p.is_independent).toBeNull();
   });
 
+  it("maps a custom area when no canonical area is selected", () => {
+    const d = baseDraft();
+    d.place.area = null;
+    d.place.areaCustomName = "  Jyotikuchi  ";
+    const p = serializeProperty(d);
+    expect(p.area_location_id).toBeNull();
+    expect(p.area_custom_name).toBe("Jyotikuchi");
+  });
+
+  it("canonical area wins over custom text", () => {
+    const d = baseDraft();
+    d.place.area = { id: 7, type: "area", name: "Beltola", city: "Guwahati" };
+    d.place.areaCustomName = "Jyotikuchi";
+    const p = serializeProperty(d);
+    expect(p.area_location_id).toBe(7);
+    expect(p.area_custom_name).toBeNull();
+  });
+
+  it("maps blank custom area to null", () => {
+    const d = baseDraft();
+    d.place.area = null;
+    d.place.areaCustomName = "   ";
+    const p = serializeProperty(d);
+    expect(p.area_location_id).toBeNull();
+    expect(p.area_custom_name).toBeNull();
+  });
+
   it("encodes the approved curfew combinations", () => {
     const yes = baseDraft();
     yes.space.pgCurfew = true;
@@ -431,6 +458,7 @@ describe("payload schema conformance (M1 — the C1 bug class)", () => {
   ];
   const PROPERTY_KEYS = [
     "address_line",
+    "area_custom_name",
     "area_location_id",
     "city",
     "gate_closing_time",

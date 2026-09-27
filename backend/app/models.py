@@ -168,6 +168,10 @@ class Property(Base):
     area_location_id: Mapped[int | None] = mapped_column(
         ForeignKey("locations.id", ondelete="RESTRICT")
     )
+    # Owner-entered area name for areas missing from the locations catalog.
+    # Mutually preferred with area_location_id: when a canonical area is
+    # set, this stays NULL. Never auto-created into Location rows.
+    area_custom_name: Mapped[str | None] = mapped_column(Text)
     city: Mapped[str] = mapped_column(String(100), default="Guwahati")
     pincode: Mapped[str | None] = mapped_column(String(10))
     gate_closing_time: Mapped[time | None] = mapped_column(Time)

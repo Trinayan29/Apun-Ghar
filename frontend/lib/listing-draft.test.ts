@@ -14,7 +14,9 @@ import {
   prevChapter,
   validateChooseProperty,
   validatePlaceName,
+  validateWhere,
   type ListingDraft,
+  type PlaceDraft,
   type SubmitProgress,
 } from "./listing-draft";
 import type { OwnerPropertyItem } from "./api";
@@ -256,6 +258,102 @@ describe("validatePlaceName", () => {
   });
 });
 
+describe("areaCustomName draft field", () => {
+  it("defaults to an empty string", () => {
+    expect(emptyDraft("d").place.areaCustomName).toBe("");
+  });
+
+  it("old drafts without areaCustomName hydrate to empty string", () => {
+    const store: Record<string, string> = {};
+    const fakeWindow = {
+      localStorage: {
+        getItem: (k: string) => store[k] ?? null,
+        setItem: (k: string, v: string) => {
+          store[k] = v;
+        },
+      },
+    };
+    (globalThis as Record<string, unknown>)["window"] = fakeWindow;
+    try {
+      const legacy = emptyDraft("old") as unknown as Record<string, unknown>;
+      const place = { ...(legacy["place"] as Record<string, unknown>) };
+      delete place["areaCustomName"];
+      legacy["place"] = place;
+      store["owner-listing-drafts:u1"] = JSON.stringify({ old: legacy });
+      expect(loadDrafts("u1")["old"].place.areaCustomName).toBe("");
+    } finally {
+      delete (globalThis as Record<string, unknown>)["window"];
+    }
+  });
+
+  it("merge preserves an existing areaCustomName", () => {
+    const store: Record<string, string> = {};
+    const fakeWindow = {
+      localStorage: {
+        getItem: (k: string) => store[k] ?? null,
+        setItem: (k: string, v: string) => {
+          store[k] = v;
+        },
+      },
+    };
+    (globalThis as Record<string, unknown>)["window"] = fakeWindow;
+    try {
+      const named = emptyDraft("n");
+      named.place.areaCustomName = "Jyotikuchi";
+      store["owner-listing-drafts:u1"] = JSON.stringify({ n: named });
+      expect(loadDrafts("u1")["n"].place.areaCustomName).toBe("Jyotikuchi");
+    } finally {
+      delete (globalThis as Record<string, unknown>)["window"];
+    }
+  });
+});
+
+describe("validateWhere area fallback", () => {
+  function wherePlace(overrides: Partial<PlaceDraft> = {}): PlaceDraft {
+    return {
+      buildingType: "PG",
+      buildingOther: "",
+      placeName: "Green View House",
+      address: "12 Test Road, Guwahati",
+      locality: "",
+      area: null,
+      areaCustomName: "",
+      city: "Guwahati",
+      pincode: "",
+      college: null,
+      workplace: null,
+      gateTime: "",
+      ...overrides,
+    };
+  }
+
+  it("accepts a canonical area", () => {
+    expect(
+      validateWhere(
+        wherePlace({
+          area: { id: 7, type: "area", name: "Beltola", city: "Guwahati" },
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("accepts a custom area without a canonical one", () => {
+    expect(validateWhere(wherePlace({ areaCustomName: "Jyotikuchi" }))).toBeNull();
+  });
+
+  it("accepts padded custom area names", () => {
+    expect(validateWhere(wherePlace({ areaCustomName: "  Jyotikuchi  " }))).toBeNull();
+  });
+
+  it("rejects neither canonical nor custom area", () => {
+    expect(validateWhere(wherePlace())).not.toBeNull();
+  });
+
+  it("rejects whitespace-only custom area", () => {
+    expect(validateWhere(wherePlace({ areaCustomName: "   " }))).not.toBeNull();
+  });
+});
+
 describe("placename chapter order", () => {
   it("sits between Where and Space", () => {
     expect(nextChapter("where")).toBe("placename");
@@ -288,6 +386,7 @@ function ownedProperty(overrides: Partial<OwnerPropertyItem> = {}): OwnerPropert
     city: "Guwahati",
     pincode: "781028",
     area_location_id: 7,
+    area_custom_name: null,
     area_location: { id: 7, type: "area", name: "Beltola", city: "Guwahati" },
     ...overrides,
   };
@@ -383,6 +482,14 @@ describe("prefillPlaceFromProperty", () => {
     expect(place.area).toBeNull();
     expect(place.locality).toBe("");
     expect(place.city).toBe("");
+  });
+
+  it("prefills a custom area from a property without canonical area", () => {
+    const place = prefillPlaceFromProperty(
+      ownedProperty({ area_location_id: null, area_location: null, area_custom_name: "Jyotikuchi" })
+    );
+    expect(place.area).toBeNull();
+    expect(place.areaCustomName).toBe("Jyotikuchi");
   });
 
   it("falls back to OTHER with empty detail for unknown backend types", () => {

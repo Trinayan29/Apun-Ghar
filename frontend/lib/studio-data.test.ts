@@ -180,6 +180,22 @@ describe("property → unit → listing hierarchy", () => {
     expect(data.properties[1].name).toBeNull();
   });
 
+  it("passes custom area names through, null stays null", () => {
+    const data = aggregateStudioData(
+      input({
+        properties: [
+          prop(1, { area_location_id: null, area_location: null, area_custom_name: "Jyotikuchi" }),
+          prop(2, { area_custom_name: null }),
+        ],
+        unitsByProperty: { 1: [unit(10, 1)], 2: [unit(20, 2)] },
+        listings: [],
+      })
+    );
+    expect(data.properties[0].areaCustomName).toBe("Jyotikuchi");
+    expect(data.properties[0].areaName).toBeNull();
+    expect(data.properties[1].areaCustomName).toBeNull();
+  });
+
   it("treats a missing name key as unnamed", () => {
     const raw = prop(1) as Record<string, unknown>;
     delete raw["name"];

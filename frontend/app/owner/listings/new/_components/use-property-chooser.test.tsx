@@ -33,6 +33,7 @@ function prop(id: number, name: string | null) {
     city: "Guwahati",
     pincode: null,
     area_location_id: null,
+    area_custom_name: null,
     area_location: null,
   };
 }

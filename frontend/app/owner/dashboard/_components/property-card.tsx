@@ -22,7 +22,10 @@ const PROPERTY_TYPE_LABELS: Record<string, string> = {
 };
 
 function locationLine(property: StudioProperty): string | null {
-  const parts = [property.locality ?? property.areaName, property.city].filter(
+  const parts = [
+    property.locality ?? property.areaName ?? property.areaCustomName,
+    property.city,
+  ].filter(
     (part): part is string => !!part && part.trim().length > 0
   );
   return parts.length > 0 ? parts.join(" · ") : null;

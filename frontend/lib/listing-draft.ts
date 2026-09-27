@@ -177,6 +177,9 @@ export interface PlaceDraft {
   locality: string;
   /** Typed catalog selection (area). Never free text. */
   area: LocationItem | null;
+  /** Owner-entered area name for areas missing from the catalog. Only
+   *  used when area is null; a selected catalog area always wins. */
+  areaCustomName: string;
   city: string;
   pincode: string;
   /** Typed catalog selections. Never free text. */
@@ -430,12 +433,22 @@ export function nextSubmitProgress(
   return progress;
 }
 
+/**
+ * Where the draft's property comes from. `"new"` (default) means this flow
+ * creates the Property; `"existing"` means the owner picked one of their
+ * current properties and the flow must reuse its id. Authoritative — never
+ * inferred from backendIds.propertyId, which is also set when this flow
+ * itself created the property during an earlier submission attempt.
+ */
+export type PropertySource = "new" | "existing";
+
 export interface ListingDraft {
   id: string;
   status: "draft";
   updatedAt: number;
   currentChapter: ChapterId;
   furthestChapter: ChapterId;
+  propertySource: PropertySource;
   space: SpaceDraft;
   place: PlaceDraft;
   photos: PhotoDraft[];
@@ -546,6 +559,7 @@ export function emptyDraft(id: string): ListingDraft {
       address: "",
       locality: "",
       area: null,
+      areaCustomName: "",
       city: "Guwahati",
       pincode: "",
       college: null,
@@ -657,9 +671,10 @@ export function validateName(listing: ListingIdentityDraft): string | null {
 /** Suggest a headline from answers so far. Owner-editable, never stored silently. */
 export function suggestTitle(d: {
   space: SpaceDraft;
-  place: Pick<PlaceDraft, "area" | "locality" | "college">;
+  place: Pick<PlaceDraft, "area" | "areaCustomName" | "locality" | "college">;
 }): string {
-  const areaName = d.place.area?.name.trim() ?? "";
+  const areaName =
+    d.place.area?.name.trim() || d.place.areaCustomName.trim() || "";
   const near =
     d.place.college?.name.trim() || areaName || d.place.locality.trim();
   const where = near ? ` near ${near}` : "";
@@ -705,7 +720,7 @@ export function readiness(d: ListingDraft): ReadinessItem[] {
   const placeOk =
     d.place.address.trim().length > 0 &&
     d.place.city.trim().length > 0 &&
-    d.place.area !== null;
+    (d.place.area !== null || d.place.areaCustomName.trim() !== "");
   const availOk =
     d.availability.mode === "now" ||
     (d.availability.mode === "from" && d.availability.date.length > 0);
@@ -732,7 +747,11 @@ export function readiness(d: ListingDraft): ReadinessItem[] {
       key: "location",
       ok: placeOk,
       label: "Location",
-      detail: placeOk ? (d.place.area?.name.trim() || "Set") : "Area missing",
+      detail: placeOk
+        ? d.place.area?.name.trim() ||
+          d.place.areaCustomName.trim() ||
+          "Set"
+        : "Area missing",
       step: "where",
     },
     {
@@ -789,7 +808,8 @@ export function validateMoveIn(availability: AvailabilityDraft): string | null {
 }
 
 export function validateWhere(place: PlaceDraft): string | null {
-  if (!place.area) return "Choose the area where your property is located.";
+  if (!place.area && !place.areaCustomName.trim())
+    return "Choose the area where your property is located.";
   if (place.address.trim().length < 5)
     return "Add the house number, street and a landmark.";
   if (!place.city.trim()) return "City is needed — Guwahati is filled in for you.";
@@ -834,6 +854,7 @@ export function prefillPlaceFromProperty(item: OwnerPropertyItem): PlaceDraft {
     area: item.area_location
       ? { id: item.area_location.id, type: "area", name: item.area_location.name, city: item.area_location.city }
       : null,
+    areaCustomName: item.area_custom_name ?? "",
     city: item.city ?? "",
     pincode: item.pincode ?? "",
     // Nearby-college/workplace answers belong to this listing flow, not the
