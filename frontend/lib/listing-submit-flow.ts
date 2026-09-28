@@ -27,10 +27,11 @@
  * photo uploads, publish.
  */
 
-import { apiGet, apiPost, apiPut } from "./api";
+import { apiGet, apiPatch, apiPost, apiPut } from "./api";
 import {
   describeAmenities,
   serializeAvailability,
+  serializeDraftListing,
   serializeListing,
   serializePriceComponents,
   serializeProperty,
@@ -62,16 +63,17 @@ export interface IdResponse {
 export type Transport = <T>(
   path: string,
   body: unknown,
-  method: "POST" | "PUT" | "GET"
+  method: "POST" | "PUT" | "GET" | "PATCH"
 ) => Promise<T>;
 
 const defaultTransport: Transport = <T>(
   path: string,
   body: unknown,
-  method: "POST" | "PUT" | "GET"
+  method: "POST" | "PUT" | "GET" | "PATCH"
 ) => {
   if (method === "PUT") return apiPut<T>(path, body);
   if (method === "GET") return apiGet<T>(path);
+  if (method === "PATCH") return apiPatch<T>(path, body);
   return apiPost<T>(path, body);
 };
 
@@ -300,6 +302,44 @@ export async function submitListingDraft(
     }
   }
 
+  // Reconcile early draft-save rows with the current answers. An ensure
+  // may have created property/unit/listing from earlier chapters (with a
+  // placeholder title); the full send always syncs them to the final
+  // values. All three PATCHes are idempotent full-replaces, and price is
+  // synced after the listing basis so its validation still applies.
+  try {
+    await transport<unknown>(
+      `/api/v1/owner/properties/${ids.propertyId as number}`,
+      serializeProperty(draft),
+      "PATCH"
+    );
+  } catch (err) {
+    return failure(ids, progress, "property", err);
+  }
+  try {
+    await transport<unknown>(
+      `/api/v1/owner/units/${ids.unitId as number}`,
+      serializeUnit(draft),
+      "PATCH"
+    );
+  } catch (err) {
+    return failure(ids, progress, "unit", err);
+  }
+  try {
+    const full: ListingPayload = serializeListing(draft, ids.unitId as number);
+    await transport<unknown>(
+      `/api/v1/owner/listings/${ids.listingId as number}`,
+      {
+        title: full.title,
+        description: full.description,
+        rent_basis: full.rent_basis,
+      },
+      "PATCH"
+    );
+  } catch (err) {
+    return failure(ids, progress, "listing", err);
+  }
+
   if (!progress.price) {
     // Bulk replace: the full serializer output becomes the listing's
     // price set. Never partially applied — success marks complete.
@@ -345,3 +385,90 @@ export type {
   PropertyPayload,
   RentalUnitPayload,
 };
+
+export type EnsureResult =
+  | { ok: true; ids: BackendIds }
+  | {
+      ok: false;
+      ids: BackendIds;
+      failedStep: SubmitStep;
+      error: string;
+      status?: number;
+    };
+
+/**
+ * Early draft-save creation for the photos chapter: Property -> RentalUnit
+ * -> Listing only, validated by validateForDraftSave (never price/move-in/
+ * name). The listing carries a unique placeholder title + derived-or-
+ * default rent_basis/availability; the full send later syncs every row to
+ * the final answers. Skips steps already recorded (idempotent across
+ * retries/reloads); price/availability progress flags are never touched.
+ */
+export async function ensureDraftListing(
+  draft: ListingDraft,
+  transport: Transport = defaultTransport
+): Promise<EnsureResult> {
+  const ids: BackendIds = { ...draft.backendIds };
+
+  if (ids.propertyId === null) {
+    const payload: PropertyPayload = serializeProperty(draft);
+    try {
+      const created = await transport<IdResponse>(
+        "/api/v1/owner/properties",
+        payload,
+        "POST"
+      );
+      ids.propertyId = created.id;
+    } catch (err) {
+      const f = failure(ids, draft.submitProgress, "property", err);
+      return { ok: false, ids: f.ids, failedStep: f.failedStep, error: f.error, status: f.status };
+    }
+  }
+
+  if (ids.unitId === null) {
+    const payload: RentalUnitPayload = serializeUnit(draft);
+    try {
+      const created = await transport<IdResponse>(
+        `/api/v1/owner/properties/${ids.propertyId as number}/units`,
+        payload,
+        "POST"
+      );
+      ids.unitId = created.id;
+    } catch (err) {
+      const f = failure(ids, draft.submitProgress, "unit", err);
+      return { ok: false, ids: f.ids, failedStep: f.failedStep, error: f.error, status: f.status };
+    }
+  }
+
+  if (ids.listingId === null) {
+    const payload: ListingPayload = serializeDraftListing(
+      draft,
+      ids.unitId as number
+    );
+    try {
+      const created = await transport<IdResponse>(
+        "/api/v1/owner/listings",
+        payload,
+        "POST"
+      );
+      ids.listingId = created.id;
+    } catch (err) {
+      if (!isConflict(err)) {
+        const f = failure(ids, draft.submitProgress, "listing", err);
+        return { ok: false, ids: f.ids, failedStep: f.failedStep, error: f.error, status: f.status };
+      }
+      const adopted = await tryAdoptListing(
+        transport,
+        ids.unitId as number,
+        payload
+      );
+      if (adopted === null) {
+        const f = failure(ids, draft.submitProgress, "listing", err);
+        return { ok: false, ids: f.ids, failedStep: f.failedStep, error: f.error, status: f.status };
+      }
+      ids.listingId = adopted;
+    }
+  }
+
+  return { ok: true, ids };
+}

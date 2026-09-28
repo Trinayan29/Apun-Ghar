@@ -18,12 +18,14 @@
  */
 
 import {
+  ensureDraftListing,
   submitListingDraft,
   type SubmitResult,
   type SubmitStep,
   type Transport,
 } from "./listing-submit-flow";
 import {
+  normalizeBackendId,
   validateChooseProperty,
   validateKind,
   validateMoveIn,
@@ -72,6 +74,106 @@ export function validateForSubmit(draft: ListingDraft): SubmitBlocker | null {
     if (message !== null) return { step, message };
   }
   return null;
+}
+
+/**
+ * Draft-save validation: only the chapters answered before SHOW THE PLACE.
+ * Price, move-in, name (and photos count) are deliberately unchecked — an
+ * incomplete backend DRAFT is the whole point. Publication still requires
+ * the full validateForSubmit path at send time.
+ */
+export function validateForDraftSave(draft: ListingDraft): SubmitBlocker | null {
+  const lockedPlace = draft.propertySource === "existing";
+  const checks: [ChapterId, string | null][] = [
+    ["what", validateWhat(draft.space)],
+    ["kind", validateKind(draft.place)],
+    ["chooseproperty", validateChooseProperty(draft)],
+    ["where", lockedPlace ? null : validateWhere(draft.place)],
+    ["placename", lockedPlace ? null : validatePlaceName(draft.place)],
+    ["space", validateSpace(draft.space)],
+    ["who", validateWho(draft.space, draft.place)],
+  ];
+  for (const [step, message] of checks) {
+    if (message !== null) return { step, message };
+  }
+  return null;
+}
+
+export type EnsureActionOutcome =
+  | { type: "invalid"; blocker: SubmitBlocker }
+  | { type: "busy" }
+  | {
+      type: "done";
+      ids: BackendIds;
+      /** Preformatted failure (validation never reaches here as error). */
+      error: string | null;
+    };
+
+/**
+ * Validate-for-draft-save, then ensure backend ids exactly once. Persists
+ * ids on BOTH success and failure so retries resume. Validation failures
+ * surface the real blocker message — never a network error.
+ */
+export async function ensureDraftListingIds(deps: {
+  draft: ListingDraft;
+  guard: SubmitGuard;
+  transport?: Transport;
+  persist: (ids: BackendIds) => void;
+}): Promise<EnsureActionOutcome> {
+  const blocker = validateForDraftSave(deps.draft);
+  if (blocker !== null) return { type: "invalid", blocker };
+  if (!deps.guard.tryStart()) return { type: "busy" };
+  try {
+    const result = await ensureDraftListing(deps.draft, deps.transport);
+    deps.persist(result.ids);
+    if (!result.ok) {
+      return {
+        type: "done",
+        ids: result.ids,
+        error: submitErrorMessage({
+          ok: false,
+          ids: result.ids,
+          progress: deps.draft.submitProgress,
+          failedStep: result.failedStep,
+          status: result.status,
+          error: result.error,
+        }),
+      };
+    }
+    return { type: "done", ids: result.ids, error: null };
+  } finally {
+    deps.guard.finish();
+  }
+}
+
+export type EnsureListingResult =
+  | { ok: true; listingId: number }
+  | { ok: false; message: string };
+
+/**
+ * Page-framework-free ensure: same contract the wizard uses, without React.
+ * The listing id comes from the ensure outcome itself — never from an
+ * immediate store re-read, which stays stale under batched persistence
+ * (React setState) even after a successful persist.
+ */
+export async function ensureListingIdForDraft(deps: {
+  draft: ListingDraft;
+  guard: SubmitGuard;
+  transport?: Transport;
+  persist: (ids: BackendIds) => void;
+}): Promise<EnsureListingResult> {
+  const existing = normalizeBackendId(deps.draft.backendIds?.listingId);
+  if (existing != null) return { ok: true, listingId: existing };
+  const outcome = await ensureDraftListingIds(deps);
+  if (outcome.type === "busy")
+    return { ok: false, message: "Already saving — try again in a moment." };
+  if (outcome.type === "invalid")
+    return { ok: false, message: outcome.blocker.message };
+  if (outcome.error !== null) return { ok: false, message: outcome.error };
+  const created = normalizeBackendId(outcome.ids.listingId);
+  if (created == null)
+    return { ok: false, message: "Couldn't save the draft — try again." };
+  return { ok: true, listingId: created };
 }
 
 export interface SubmitGuard {

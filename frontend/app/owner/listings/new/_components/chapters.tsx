@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Field, FormError, TextField } from "@/components/auth-ui";
 import { LocationSearchField } from "@/components/location-search";
 import { ChoiceGrid, ClearableChoice, SegmentedStrip, Stepper } from "@/components/ui/choices";
@@ -37,7 +37,19 @@ import {
 } from "@/lib/listing-draft";
 import { submitSuccessMessage } from "@/lib/listing-submit-action";
 import type { SubmitResult } from "@/lib/listing-submit-flow";
-import type { OwnerPropertyItem } from "@/lib/api";
+import {
+  deleteListingPhoto,
+  getOwnerListing,
+  patchListingPhoto,
+  type OwnerPhotoItem,
+  type OwnerPropertyItem,
+} from "@/lib/api";
+import {
+  resolveMime,
+  uploadPhoto,
+  validatePhotoFile,
+  type AcceptedMime,
+} from "@/lib/photo-upload";
 
 /* ------------------------------------------------------------------ */
 /* Chapter 1 — What are you renting?                                   */
@@ -931,9 +943,12 @@ function newPhotoId(): string {
 
 /**
  * Downscale to a JPEG data URL so previews persist inside localStorage
- * limits. No binary blobs are stored; no backend involved.
+ * limits. No binary blobs are stored. Dimensions ride along for the
+ * upload confirm call.
  */
-function fileToPreview(file: File): Promise<string | null> {
+function fileToPreview(
+  file: File
+): Promise<{ src: string | null; width: number | null; height: number | null }> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
@@ -947,35 +962,237 @@ function fileToPreview(file: File): Promise<string | null> {
         canvas.height = Math.max(1, Math.round(img.height * scale));
         const ctx = canvas.getContext("2d");
         if (!ctx) {
-          resolve(null);
+          resolve({ src: null, width: img.width, height: img.height });
           return;
         }
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL("image/jpeg", 0.82));
+        resolve({
+          src: canvas.toDataURL("image/jpeg", 0.82),
+          width: img.width,
+          height: img.height,
+        });
       } catch {
-        resolve(null);
+        resolve({ src: null, width: null, height: null });
       }
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      resolve(null);
+      resolve({ src: null, width: null, height: null });
     };
     img.src = url;
   });
+}
+
+/** Backend photo operations, injectable for tests. */
+export interface PhotoBackendOps {
+  upload: (
+    listingId: number,
+    file: File,
+    mime: AcceptedMime,
+    opts: {
+      displayOrder: number;
+      isCover: boolean;
+      width?: number | null;
+      height?: number | null;
+    }
+  ) => Promise<OwnerPhotoItem>;
+  remove: (listingId: number, photoId: number) => Promise<void>;
+  patch: (
+    listingId: number,
+    photoId: number,
+    patch: { display_order?: number | null; is_cover?: boolean | null }
+  ) => Promise<OwnerPhotoItem>;
+  refresh: (listingId: number) => Promise<OwnerPhotoItem[]>;
+}
+
+const defaultPhotoOps: PhotoBackendOps = {
+  upload: (listingId, file, mime, opts) =>
+    uploadPhoto(listingId, file, mime, opts),
+  remove: async (listingId, photoId) => {
+    await deleteListingPhoto(listingId, photoId);
+  },
+  patch: (listingId, photoId, patch) =>
+    patchListingPhoto(listingId, photoId, patch),
+  refresh: async (listingId) => (await getOwnerListing(listingId)).photos,
+};
+
+/**
+ * Merge backend READY photos into draft tiles by backend id: refreshes
+ * view URLs (they expire) and adopts backend rows missing locally (e.g.
+ * after a reload). Local order/cover choices are never overwritten here;
+ * returns null when nothing changed so callers avoid render loops.
+ */
+export function mergeBackendPhotos(
+  prev: PhotoDraft[],
+  backend: OwnerPhotoItem[]
+): PhotoDraft[] | null {
+  let changed = false;
+  const next = prev.map((p) => {
+    if (p.backendId == null) return p;
+    const row = backend.find((b) => b.id === p.backendId);
+    if (!row || row.upload_status !== "READY") return p;
+    if (p.status === "ready" && p.viewUrl === (row.view_url ?? null)) return p;
+    changed = true;
+    return {
+      ...p,
+      status: "ready" as const,
+      viewUrl: row.view_url ?? null,
+      error: null,
+    };
+  });
+  for (const row of backend) {
+    if (row.upload_status !== "READY") continue;
+    if (next.some((p) => p.backendId === row.id)) continue;
+    changed = true;
+    next.push({
+      id: `backend-${row.id}`,
+      name: "Photo",
+      src: null,
+      status: "ready",
+      cover: false,
+      order: next.length,
+      backendId: row.id,
+      viewUrl: row.view_url ?? null,
+      error: null,
+    });
+  }
+  if (!changed) return null;
+  if (next.length > 0 && !next.some((p) => p.cover))
+    next[0] = { ...next[0], cover: true };
+  return next.map((p, i) => ({ ...p, order: i }));
 }
 
 export function PhotosChapter({
   photos,
   onPhotos,
   error,
+  listingId,
+  onEnsureListing,
+  photoOps,
+  fileStore,
 }: {
   photos: PhotoDraft[];
   onPhotos: (photos: PhotoDraft[]) => void;
   error: string | null;
+  /** Backend listing id; null until the submit flow creates it. */
+  listingId: number | null;
+  /** Creates the backend DRAFT listing; failures carry the real reason. */
+  onEnsureListing: () => Promise<
+    { ok: true; listingId: number } | { ok: false; message: string }
+  >;
+  photoOps?: PhotoBackendOps;
+  /** Session-only original files, shared so send can finish uploads. */
+  fileStore: Map<string, File>;
 }) {
+  const ops = photoOps ?? defaultPhotoOps;
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const refreshedForRef = useRef<number | null>(null);
   const ordered = [...photos].sort((a, b) => a.order - b.order);
+  const readyCount = ordered.filter((p) => p.status === "ready").length;
+
+  // Synchronous mirror of the tiles: React state updates (and therefore
+  // re-renders) are async, but upload callbacks chain several tile updates
+  // in one tick — the mirror keeps every step composable. Re-synced from
+  // props on each render; onPhotos stays the single parent write path.
+  const tilesRef = useRef(ordered);
+  tilesRef.current = ordered;
+  const setTiles = (tiles: PhotoDraft[]) => {
+    const fixed =
+      tiles.length > 0 && !tiles.some((p) => p.cover)
+        ? tiles.map((p, i) => (i === 0 ? { ...p, cover: true } : p))
+        : tiles;
+    const next = fixed.map((p, i) => ({ ...p, order: i }));
+    tilesRef.current = next;
+    onPhotos(next);
+  };
+
+  const updateTiles = (fn: (prev: PhotoDraft[]) => PhotoDraft[]) =>
+    setTiles(fn([...tilesRef.current]));
+
+  // Refresh view URLs + adopt backend rows once per listing id, and
+  // whenever a ready tile is missing its view URL.
+  useEffect(() => {
+    if (listingId == null) return;
+    const missingView = ordered.some(
+      (p) => p.status === "ready" && p.backendId != null && !p.viewUrl
+    );
+    if (refreshedForRef.current === listingId && !missingView) return;
+    let cancelled = false;
+    void ops
+      .refresh(listingId)
+      .then((rows) => {
+        if (cancelled) return;
+        refreshedForRef.current = listingId;
+        updateTiles((prev) => {
+          const merged = mergeBackendPhotos(
+            [...prev].sort((a, b) => a.order - b.order),
+            rows
+          );
+          return merged ?? prev;
+        });
+      })
+      .catch(() => {
+        // View URLs are a display nicety; uploads still work.
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [listingId]);
+
+  const runUpload = async (
+    tileId: string,
+    file: File,
+    mime: AcceptedMime,
+    dims: { width: number | null; height: number | null },
+    targetListingId: number,
+    displayOrder: number,
+    isCover: boolean
+  ) => {
+    updateTiles((prev) =>
+      prev.map((p) =>
+        p.id === tileId
+          ? { ...p, status: "uploading" as const, error: null }
+          : p
+      )
+    );
+    try {
+      const row = await ops.upload(targetListingId, file, mime, {
+        displayOrder,
+        isCover,
+        width: dims.width,
+        height: dims.height,
+      });
+      fileStore?.delete(tileId);
+      updateTiles((prev) =>
+        prev.map((p) =>
+          p.id === tileId
+            ? {
+                ...p,
+                status: "ready" as const,
+                backendId: row.id,
+                viewUrl: row.view_url ?? null,
+                error: null,
+              }
+            : p
+        )
+      );
+    } catch (err) {
+      updateTiles((prev) =>
+        prev.map((p) =>
+          p.id === tileId
+            ? {
+                ...p,
+                status: "failed" as const,
+                error:
+                  err instanceof Error ? err.message : "Upload failed — retry.",
+              }
+            : p
+        )
+      );
+    }
+  };
 
   const addFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -987,36 +1204,139 @@ export function PhotosChapter({
     setBusy(true);
     setLocalError(null);
     try {
-      const picked = [...files]
-        .filter((f) => f.type.startsWith("image/"))
-        .slice(0, room);
-      if (picked.length === 0) {
-        setLocalError("Those files aren't photos — try JPG or PNG images.");
-        return;
+      const picked: { file: File; mime: AcceptedMime }[] = [];
+      for (const file of [...files].slice(0, room)) {
+        const problem = validatePhotoFile(file);
+        if (problem) {
+          setLocalError(problem);
+          continue;
+        }
+        const mime = resolveMime(file);
+        if (mime) picked.push({ file, mime });
       }
-      const next = [...ordered];
-      for (const file of picked) {
-        const src = await fileToPreview(file);
-        if (!src) continue;
-        next.push({
+      if (picked.length === 0) return;
+      // Backend listing first (existing submit flow); without it uploads
+      // stay local picks and sync on the next attempt.
+      let targetListingId = listingId;
+      if (targetListingId == null) {
+        const ensured = await onEnsureListing();
+        if (!ensured.ok) {
+          setLocalError(ensured.message);
+        } else {
+          targetListingId = ensured.listingId;
+        }
+      }
+      const base = [...ordered];
+      const jobs: (() => Promise<void>)[] = [];
+      for (const { file, mime } of picked) {
+        const preview = await fileToPreview(file);
+        const tile: PhotoDraft = {
           id: newPhotoId(),
           name: file.name || "Photo",
-          src,
+          src: preview.src,
           status: "local",
-          cover: next.length === 0,
-          order: next.length,
-        });
+          cover: base.length === 0,
+          order: base.length,
+          backendId: null,
+          viewUrl: null,
+          error: null,
+        };
+        base.push(tile);
+        fileStore?.set(tile.id, file);
+        if (targetListingId != null) {
+          const tileId = tile.id;
+          const displayOrder = tile.order;
+          const isCover = tile.cover;
+          jobs.push(() =>
+            runUpload(
+              tileId,
+              file,
+              mime,
+              { width: preview.width, height: preview.height },
+              targetListingId as number,
+              displayOrder,
+              isCover
+            )
+          );
+        }
       }
-      onPhotos(next.map((p, i) => ({ ...p, order: i })));
+      setTiles(base);
+      for (const job of jobs) await job();
     } finally {
       setBusy(false);
     }
   };
 
-  const removePhoto = (id: string) => {
-    const next = ordered.filter((p) => p.id !== id);
-    if (next.length > 0 && !next.some((p) => p.cover)) next[0] = { ...next[0], cover: true };
-    onPhotos(next.map((p, i) => ({ ...p, order: i })));
+  const retryUpload = async (id: string) => {
+    const tile = ordered.find((p) => p.id === id);
+    const file = fileStore?.get(id);
+    if (!tile || !file) {
+      setLocalError("The original file is gone — please re-select it.");
+      return;
+    }
+    const mime = resolveMime(file);
+    if (!mime) {
+      setLocalError("Those files aren't photos — try JPG, PNG or WebP.");
+      return;
+    }
+    let targetListingId = listingId;
+    if (targetListingId == null) {
+      const ensured = await onEnsureListing();
+      if (!ensured.ok) {
+        setLocalError(ensured.message);
+        return;
+      }
+      targetListingId = ensured.listingId;
+    }
+    setBusy(true);
+    try {
+      await runUpload(
+        id,
+        file,
+        mime,
+        { width: null, height: null },
+        targetListingId,
+        tile.order,
+        tile.cover
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removePhoto = async (id: string) => {
+    const tile = ordered.find((p) => p.id === id);
+    if (tile?.backendId != null && listingId != null) {
+      setBusy(true);
+      try {
+        await ops.remove(listingId, tile.backendId);
+      } catch {
+        setLocalError("Couldn't delete that photo — try again.");
+        setBusy(false);
+        return;
+      }
+      setBusy(false);
+    }
+    fileStore?.delete(id);
+    setTiles(ordered.filter((p) => p.id !== id));
+  };
+
+  const persistOrderAndCover = async (tiles: PhotoDraft[]) => {
+    if (listingId == null) return;
+    const backendTiles = tiles.filter((p) => p.backendId != null);
+    if (backendTiles.length === 0) return;
+    try {
+      await Promise.all(
+        backendTiles.map((p, i) =>
+          ops.patch(listingId, p.backendId as number, {
+            display_order: i,
+            is_cover: p.cover,
+          })
+        )
+      );
+    } catch {
+      setLocalError("Order saved here — Apun-Ghar will catch up on retry.");
+    }
   };
 
   const movePhoto = (id: string, dir: -1 | 1) => {
@@ -1026,7 +1346,15 @@ export function PhotosChapter({
     if (i < 0 || j < 0 || j >= arr.length) return;
     const [item] = arr.splice(i, 1);
     arr.splice(j, 0, item);
-    onPhotos(arr.map((p, k) => ({ ...p, order: k })));
+    const next = arr.map((p, k) => ({ ...p, order: k }));
+    setTiles(next);
+    void persistOrderAndCover(next);
+  };
+
+  const makeCover = (id: string) => {
+    const next = ordered.map((p) => ({ ...p, cover: p.id === id }));
+    setTiles(next);
+    void persistOrderAndCover(next);
   };
 
   return (
@@ -1038,22 +1366,23 @@ export function PhotosChapter({
     >
       <div className="flex items-center justify-between rounded-2xl bg-brand-50 px-4 py-3">
         <span className="text-[14px] font-bold text-brand-700">
-          {Math.min(ordered.length, 3)} of 3 minimum
+          {readyCount} of 3 required photos ready
         </span>
         <span className="text-[13px] font-semibold text-brand-700">{ordered.length}/15</span>
       </div>
-      {ordered.length < 3 && (
+      {readyCount < 3 && (
         <p className="mt-2 rounded-xl bg-cream px-3.5 py-2.5 text-[13px] font-medium text-muted">
-          You&apos;ll need at least 3 photos before publishing — add them now or come back later.
+          You&apos;ll need 3 ready photos before publishing — uploads finish
+          here automatically once Apun-Ghar confirms them.
         </p>
       )}
 
       <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
         {ordered.map((p, i) => (
           <div key={p.id} className="relative overflow-hidden rounded-2xl border border-line bg-white">
-            {p.src ? (
+            {(p.viewUrl ?? p.src) ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={p.src} alt={`Listing photo ${i + 1}`} className="aspect-[4/3] w-full object-cover" />
+              <img src={(p.viewUrl ?? p.src) as string} alt={`Listing photo ${i + 1}`} className="aspect-[4/3] w-full object-cover" />
             ) : (
               <span className="flex aspect-[4/3] w-full items-center justify-center bg-cream text-[13px] font-semibold text-muted">
                 Photo {i + 1}
@@ -1063,6 +1392,25 @@ export function PhotosChapter({
               <span className="absolute left-2 top-2 rounded-full bg-brand-600 px-2.5 py-1 text-[11px] font-bold text-white">
                 Cover
               </span>
+            )}
+            {p.status === "uploading" && (
+              <span className="absolute right-2 top-2 rounded-full bg-ink/70 px-2.5 py-1 text-[11px] font-bold text-white">
+                Uploading…
+              </span>
+            )}
+            {p.status === "ready" && (
+              <span className="absolute right-2 top-2 rounded-full bg-[#2F7D4F] px-2.5 py-1 text-[11px] font-bold text-white">
+                Ready ✓
+              </span>
+            )}
+            {p.status === "failed" && (
+              <button
+                type="button"
+                onClick={() => void retryUpload(p.id)}
+                className="absolute right-2 top-2 rounded-full bg-red-600 px-2.5 py-1 text-[11px] font-bold text-white"
+              >
+                Failed — retry
+              </button>
             )}
             <div className="flex items-center justify-between gap-1 p-1.5">
               <div className="flex gap-1">
@@ -1082,13 +1430,13 @@ export function PhotosChapter({
               <div className="flex gap-1">
                 {!p.cover && (
                   <button type="button"
-                    onClick={() => onPhotos(ordered.map((x) => ({ ...x, cover: x.id === p.id })))}
+                    onClick={() => makeCover(p.id)}
                     aria-label={`Make photo ${i + 1} the cover`}
                     className="flex h-10 items-center rounded-xl bg-cream px-2.5 text-[12.5px] font-bold text-brand-700 transition active:scale-95">
                     Cover
                   </button>
                 )}
-                <button type="button" onClick={() => removePhoto(p.id)} aria-label={`Remove photo ${i + 1}`}
+                <button type="button" onClick={() => void removePhoto(p.id)} aria-label={`Remove photo ${i + 1}`}
                   className="flex h-10 w-10 items-center justify-center rounded-xl bg-cream text-muted transition active:scale-95">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" aria-hidden>
                     <path d="m6 6 12 12M18 6 6 18" />
@@ -1106,7 +1454,7 @@ export function PhotosChapter({
           >
             <input
               type="file"
-              accept="image/*"
+              accept=".jpg,.jpeg,.png,.webp"
               multiple
               className="sr-only"
               disabled={busy}
@@ -1117,7 +1465,7 @@ export function PhotosChapter({
             />
             <span aria-hidden className="text-[26px] font-bold leading-none">+</span>
             <span className="text-[14px] font-bold">{busy ? "Adding…" : "Add photos"}</span>
-            <span className="px-3 text-center text-[12px]">Stay on this device for now</span>
+            <span className="px-3 text-center text-[12px]">JPG, PNG or WebP · 5 MB max · uploads to Apun-Ghar</span>
           </label>
         )}
       </div>
@@ -1740,7 +2088,7 @@ export function PreviewChapter({
           {gallery.length > 0 ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={gallery[Math.min(photoIdx, gallery.length - 1)].src ?? ""}
+              src={gallery[Math.min(photoIdx, gallery.length - 1)].viewUrl ?? gallery[Math.min(photoIdx, gallery.length - 1)].src ?? ""}
               alt={draft.listing.title.trim() || "Listing photo"}
               className="aspect-[4/3] w-full object-cover"
             />
@@ -1936,6 +2284,11 @@ export function PublishChapter({
   sending,
   sendError,
   sendResult,
+  listingId,
+  onPublish,
+  publishing,
+  publishError,
+  published,
 }: {
   draft: ListingDraft;
   go: (step: ChapterId) => void;
@@ -1946,18 +2299,43 @@ export function PublishChapter({
   sending: boolean;
   sendError: string | null;
   sendResult: Extract<SubmitResult, { ok: true }> | null;
+  /** Backend listing id; null until the send flow creates it. */
+  listingId: number | null;
+  /** Real publish: DRAFT -> PUBLISHED through POST /publish. */
+  onPublish: () => void;
+  publishing: boolean;
+  publishError: string | null;
+  /** Authoritative PUBLISHED state after a successful publish call. */
+  published: boolean;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [confirmPublish, setConfirmPublish] = useState(false);
   const [celebrating, setCelebrating] = useState(false);
   const checks = readiness(draft);
   const ok = allReady(draft);
   const live = draft.localPublish === "live";
+  const readyPhotos = draft.photos.filter((p) => p.status === "ready").length;
+  // Real publish needs a sent listing plus 3 backend-confirmed photos.
+  // Anything less keeps the honest send path below.
+  const canPublish = ok && listingId != null && readyPhotos >= 3;
 
   // A completed backend send closes the confirm dialog; the sendResult
-  // confirmation panel above takes over.
+  // confirmation panel above takes over. A completed publish closes the
+  // publish dialog; the published panel above takes over.
   useEffect(() => {
     if (sendResult) setConfirming(false);
   }, [sendResult]);
+  useEffect(() => {
+    if (published) setConfirmPublish(false);
+  }, [published]);
+  // Any settled publish failure closes the sheet too: the authoritative
+  // error panel below stays visible with Try again. The page clears the
+  // error when a new attempt starts, so every failure is a fresh
+  // null -> message transition and this always fires exactly once per
+  // failure, for every status/network failure alike.
+  useEffect(() => {
+    if (publishError) setConfirmPublish(false);
+  }, [publishError]);
 
   return (
     <div className="space-y-4">
@@ -1975,7 +2353,21 @@ export function PublishChapter({
         </p>
       </div>
 
-      {sendResult && (
+      {published && (
+        <div className="rounded-2xl border border-line bg-white p-4" role="status">
+          <p className="text-[14.5px] font-bold">Published on Apun-Ghar ✓</p>
+          <p className="mt-1 text-[13.5px] leading-relaxed text-muted">
+            Renters can now see your listing.
+          </p>
+          <Link
+            href="/owner/dashboard"
+            className="mt-3 flex min-h-[52px] items-center justify-center rounded-2xl bg-brand-600 text-[16px] font-bold text-white transition active:scale-[0.98]"
+          >
+            Back to Studio
+          </Link>
+        </div>
+      )}
+      {sendResult && !published && (
         <div className="rounded-2xl border border-line bg-white p-4" role="status">
           <p className="text-[14.5px] font-bold">Sent to Apun-Ghar ✓</p>
           <p className="mt-1 text-[13.5px] leading-relaxed text-muted">
@@ -1987,6 +2379,20 @@ export function PublishChapter({
           >
             Back to Studio
           </Link>
+        </div>
+      )}
+      {publishError && (
+        <div className="rounded-2xl border border-line bg-white p-4" role="alert">
+          <p className="text-[14.5px] font-bold">Couldn&apos;t publish</p>
+          <p className="mt-1 text-[13.5px] leading-relaxed text-muted">{publishError}</p>
+          <button
+            type="button"
+            onClick={onPublish}
+            disabled={publishing}
+            className="mt-3 flex min-h-[52px] w-full items-center justify-center rounded-2xl bg-brand-600 text-[16px] font-bold text-white transition active:scale-[0.98] disabled:opacity-50"
+          >
+            {publishing ? "Publishing…" : "Try again"}
+          </button>
         </div>
       )}
       {sendError && (
@@ -2071,14 +2477,26 @@ export function PublishChapter({
             </li>
           ))}
         </ul>
-        {!live ? (
+        {published ? (
+          <p className="mt-4 rounded-2xl bg-[#2F7D4F] px-4 py-3 text-center text-[15px] font-bold text-white">
+            Live on Apun-Ghar ✓
+          </p>
+        ) : canPublish ? (
+          <button
+            type="button"
+            onClick={() => setConfirmPublish(true)}
+            className="mt-4 flex min-h-[52px] w-full items-center justify-center rounded-2xl bg-white text-[16px] font-bold text-ink transition active:scale-[0.98] disabled:opacity-40"
+          >
+            Publish listing
+          </button>
+        ) : !live ? (
           <button
             type="button"
             disabled={!ok}
             onClick={() => setConfirming(true)}
             className="mt-4 flex min-h-[52px] w-full items-center justify-center rounded-2xl bg-white text-[16px] font-bold text-ink transition active:scale-[0.98] disabled:opacity-40"
           >
-            Publish listing
+            Send to Apun-Ghar
           </button>
         ) : (
           <button
@@ -2128,6 +2546,41 @@ export function PublishChapter({
                 type="button"
                 onClick={() => setConfirming(false)}
                 disabled={sending}
+                className="flex min-h-[52px] items-center justify-center rounded-2xl border border-line bg-white text-[15.5px] font-bold transition active:scale-[0.98] disabled:opacity-50"
+              >
+                Keep editing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmPublish && !published && (
+        <div
+          className="fixed inset-0 z-40 flex items-end justify-center bg-black/45 sm:items-center"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm publish"
+        >
+          <div className="w-full max-w-md rounded-t-3xl bg-white p-6 pb-8 sm:rounded-3xl">
+            <h3 className="text-[18px] font-bold">Publish this listing?</h3>
+            <p className="mt-1.5 text-[14px] leading-relaxed text-muted">
+              This makes your listing visible to renters on Apun-Ghar —
+              {readyPhotos} of 3 required photos ready.
+            </p>
+            <div className="mt-5 grid gap-2">
+              <button
+                type="button"
+                onClick={onPublish}
+                disabled={publishing}
+                className="flex min-h-[52px] items-center justify-center rounded-2xl bg-brand-600 text-[16px] font-bold text-white transition active:scale-[0.98] disabled:opacity-50"
+              >
+                {publishing ? "Publishing…" : "Yes, publish"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmPublish(false)}
+                disabled={publishing}
                 className="flex min-h-[52px] items-center justify-center rounded-2xl border border-line bg-white text-[15.5px] font-bold transition active:scale-[0.98] disabled:opacity-50"
               >
                 Keep editing

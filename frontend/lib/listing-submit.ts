@@ -368,6 +368,40 @@ export interface ListingPayload {
   available_from: string | null;
 }
 
+/**
+ * Placeholder title for early draft-save creation. The backend requires a
+ * title to create a DRAFT, but the owner names the listing much later, so
+ * the draft id is embedded: unique per local draft (no cross-draft 409
+ * adoption), deterministic across retries (same draft re-adopts its own
+ * row), and always overwritten by the send-time PATCH before publish.
+ */
+export const DRAFT_TITLE_PREFIX = "Untitled listing";
+
+export function placeholderTitle(draftId: string): string {
+  return `${DRAFT_TITLE_PREFIX} ${draftId}`;
+}
+
+export function isPlaceholderTitle(title: string): boolean {
+  return title.startsWith(`${DRAFT_TITLE_PREFIX} `);
+}
+
+/**
+ * Early draft-save payload: identical to the real listing payload except
+ * the title. rent_basis/availability reuse the standard mapping, which
+ * derives the real value when the draft already has it and falls back to
+ * safe defaults (PER_PERSON / AVAILABLE_NOW) otherwise — the send-time
+ * sync PATCH reconciles everything with the final answers.
+ */
+export function serializeDraftListing(
+  draft: ListingDraft,
+  rentalUnitId: number
+): ListingPayload {
+  return {
+    ...serializeListing(draft, rentalUnitId),
+    title: placeholderTitle(draft.id),
+  };
+}
+
 export function serializeListing(
   draft: ListingDraft,
   rentalUnitId: number

@@ -5,12 +5,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { emptyDraft, type ListingDraft } from "./listing-draft";
 import {
+  ensureDraftListing,
   findAdoptableListing,
   LISTING_RECOVERY_WINDOW_MS,
   submitListingDraft,
   type RecoveryCandidate,
   type Transport,
 } from "./listing-submit-flow";
+import { isPlaceholderTitle } from "./listing-submit";
 
 function validDraft(): ListingDraft {
   const d = emptyDraft("draft-1");
@@ -36,7 +38,7 @@ function okTransport(ids: { property: number; unit: number; listing: number }) {
   const transport: Transport = async <T,>(
     path: string,
     body: unknown,
-    method: "POST" | "PUT" | "GET"
+    method: "POST" | "PUT" | "GET" | "PATCH"
   ): Promise<T> => {
     calls.push({ path, body, method });
     if (path === "/api/v1/owner/properties") return { id: ids.property } as T;
@@ -58,6 +60,9 @@ describe("successful Property -> Unit -> Listing creation", () => {
       "/api/v1/owner/properties",
       "/api/v1/owner/properties/10/units",
       "/api/v1/owner/listings",
+      "/api/v1/owner/properties/10",
+      "/api/v1/owner/units/20",
+      "/api/v1/owner/listings/30",
       "/api/v1/owner/listings/30/price-components",
       "/api/v1/owner/listings/30/availability",
     ]);
@@ -65,6 +70,9 @@ describe("successful Property -> Unit -> Listing creation", () => {
       "POST",
       "POST",
       "POST",
+      "PATCH",
+      "PATCH",
+      "PATCH",
       "PUT",
       "POST",
     ]);
@@ -77,11 +85,15 @@ describe("successful Property -> Unit -> Listing creation", () => {
     const listingBody = calls[2].body as Record<string, unknown>;
     expect(listingBody["rental_unit_id"]).toBe(20);
     expect(listingBody["title"]).toBe("Sunny PG near campus");
-    const priceBody = calls[3].body as Record<string, unknown>[];
+    // Send-time reconcile: idempotent PATCHes carry the final answers.
+    const syncListingBody = calls[5].body as Record<string, unknown>;
+    expect(syncListingBody["title"]).toBe("Sunny PG near campus");
+    expect(syncListingBody["rent_basis"]).toBe("PER_PERSON");
+    const priceBody = calls[6].body as Record<string, unknown>[];
     expect(priceBody[0]["charge_type"]).toBe("RENT");
     expect(priceBody[0]["amount_paise"]).toBe(800000);
     expect(priceBody[0]["calculation_basis"]).toBe("PER_PERSON");
-    const availabilityBody = calls[4].body as Record<string, unknown>;
+    const availabilityBody = calls[7].body as Record<string, unknown>;
     expect(availabilityBody).toEqual({
       availability_status: "AVAILABLE_NOW",
       available_from: null,
@@ -101,6 +113,9 @@ describe("successful Property -> Unit -> Listing creation", () => {
     expect(calls.map((c) => c.path)).toEqual([
       "/api/v1/owner/properties/42/units",
       "/api/v1/owner/listings",
+      "/api/v1/owner/properties/42",
+      "/api/v1/owner/units/20",
+      "/api/v1/owner/listings/30",
       "/api/v1/owner/listings/30/price-components",
       "/api/v1/owner/listings/30/availability",
     ]);
@@ -225,6 +240,9 @@ describe("4E-2 price + availability submission", () => {
       if (path === "/api/v1/owner/properties") return { id: 10 } as T;
       if (path.endsWith("/units")) return { id: 20 } as T;
       if (path === "/api/v1/owner/listings") return { id: 30 } as T;
+      if (path === "/api/v1/owner/properties/10") return {} as T;
+      if (path === "/api/v1/owner/units/20") return {} as T;
+      if (path === "/api/v1/owner/listings/30") return {} as T;
       throw apiError(422, "bad price row");
     };
     const result = await submitListingDraft(pricedDraft(), transport);
@@ -234,8 +252,8 @@ describe("4E-2 price + availability submission", () => {
     expect(result.status).toBe(422);
     expect(result.ids).toEqual(ids30());
     expect(result.progress).toEqual({ price: false, availability: false });
-    expect(calls).toHaveLength(4);
-    expect(calls[3]).toBe("/api/v1/owner/listings/30/price-components");
+    expect(calls).toHaveLength(7);
+    expect(calls[6]).toBe("/api/v1/owner/listings/30/price-components");
   });
 
   it("an availability failure keeps price complete", async () => {
@@ -245,6 +263,9 @@ describe("4E-2 price + availability submission", () => {
       if (path === "/api/v1/owner/properties") return { id: 10 } as T;
       if (path.endsWith("/units")) return { id: 20 } as T;
       if (path === "/api/v1/owner/listings") return { id: 30 } as T;
+      if (path === "/api/v1/owner/properties/10") return {} as T;
+      if (path === "/api/v1/owner/units/20") return {} as T;
+      if (path === "/api/v1/owner/listings/30") return {} as T;
       if (path.endsWith("/price-components")) return [] as T;
       throw new Error("connection reset");
     };
@@ -255,10 +276,10 @@ describe("4E-2 price + availability submission", () => {
     expect(result.status).toBeUndefined();
     expect(result.ids).toEqual(ids30());
     expect(result.progress).toEqual({ price: true, availability: false });
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(8);
   });
 
-  it("retry after a price failure attempts only price + availability", async () => {
+  it("retry after a price failure reconciles rows, then price + availability", async () => {
     const calls: string[] = [];
     const transport: Transport = async <T,>(path: string): Promise<T> => {
       calls.push(path);
@@ -273,12 +294,15 @@ describe("4E-2 price + availability submission", () => {
     if (!result.ok) return;
     expect(result.progress).toEqual({ price: true, availability: true });
     expect(calls).toEqual([
+      "/api/v1/owner/properties/10",
+      "/api/v1/owner/units/20",
+      "/api/v1/owner/listings/30",
       "/api/v1/owner/listings/30/price-components",
       "/api/v1/owner/listings/30/availability",
     ]);
   });
 
-  it("retry after an availability failure attempts only availability", async () => {
+  it("retry after an availability failure reconciles rows, then availability", async () => {
     const inner = vi.fn(async (_path: string) => ({}));
     const transport: Transport = (async <T,>(
       path: string
@@ -293,8 +317,8 @@ describe("4E-2 price + availability submission", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.progress).toEqual({ price: true, availability: true });
-    expect(inner).toHaveBeenCalledTimes(1);
-    expect(inner).toHaveBeenCalledWith("/api/v1/owner/listings/30/availability");
+    expect(inner).toHaveBeenCalledTimes(4);
+    expect(inner).toHaveBeenNthCalledWith(4, "/api/v1/owner/listings/30/availability");
   });
 
   it("resubmits edited price/availability with new values instead of skipping", async () => {
@@ -312,23 +336,28 @@ describe("4E-2 price + availability submission", () => {
     if (!result.ok) return;
     expect(result.progress).toEqual({ price: true, availability: true });
     expect(calls.map((c) => c.path)).toEqual([
+      "/api/v1/owner/properties/10",
+      "/api/v1/owner/units/20",
+      "/api/v1/owner/listings/30",
       "/api/v1/owner/listings/30/price-components",
       "/api/v1/owner/listings/30/availability",
     ]);
-    const rows = calls[0].body as Record<string, unknown>[];
+    const rows = calls[3].body as Record<string, unknown>[];
     expect(rows.find((r) => r["charge_type"] === "RENT")?.["amount_paise"]).toBe(
       900000
     );
-    expect(calls[1].body).toEqual({
+    expect(calls[4].body).toEqual({
       availability_status: "AVAILABLE_FROM_DATE",
       available_from: "2026-10-01",
     });
   });
 
-  it("a fully-submitted draft performs zero network calls", async () => {
-    const inner = vi.fn(async () => ({}));
-    const transport: Transport = (async <T,>(): Promise<T> => {
-      await inner();
+  it("a fully-submitted draft performs only reconcile PATCHes", async () => {
+    const inner = vi.fn(async (_path: string) => ({}));
+    const transport: Transport = (async <T,>(
+      path: string
+    ): Promise<T> => {
+      await inner(path);
       return {} as T;
     }) as Transport;
     const draft = validDraft();
@@ -336,7 +365,11 @@ describe("4E-2 price + availability submission", () => {
     draft.submitProgress = { price: true, availability: true };
     const result = await submitListingDraft(draft, transport);
     expect(result.ok).toBe(true);
-    expect(inner).not.toHaveBeenCalled();
+    // No creates, no price/availability resubmits — only idempotent sync.
+    expect(inner).toHaveBeenCalledTimes(3);
+    expect(inner).toHaveBeenNthCalledWith(1, "/api/v1/owner/properties/10");
+    expect(inner).toHaveBeenNthCalledWith(2, "/api/v1/owner/units/20");
+    expect(inner).toHaveBeenNthCalledWith(3, "/api/v1/owner/listings/30");
   });
 });
 
@@ -361,7 +394,7 @@ describe("409 listing recovery (lost create response)", () => {
     const transport: Transport = async <T,>(
       path: string,
       body: unknown,
-      method: "POST" | "PUT" | "GET"
+      method: "POST" | "PUT" | "GET" | "PATCH"
     ): Promise<T> => {
       if (method === "GET") {
         gets.push(path);
@@ -540,6 +573,9 @@ describe("caller persistence contract (M2)", () => {
     expect(retryCalls).toEqual([
       "/api/v1/owner/properties/10/units",
       "/api/v1/owner/listings",
+      "/api/v1/owner/properties/10",
+      "/api/v1/owner/units/20",
+      "/api/v1/owner/listings/30",
       "/api/v1/owner/listings/30/price-components",
       "/api/v1/owner/listings/30/availability",
     ]);
@@ -656,12 +692,15 @@ describe("retry and duplicate prevention", () => {
     expect(secondCalls).toEqual([
       "/api/v1/owner/properties/10/units",
       "/api/v1/owner/listings",
+      "/api/v1/owner/properties/10",
+      "/api/v1/owner/units/20",
+      "/api/v1/owner/listings/30",
       "/api/v1/owner/listings/30/price-components",
       "/api/v1/owner/listings/30/availability",
     ]);
   });
 
-  it("a draft with ids but no progress performs only price + availability", async () => {
+  it("a draft with ids but no progress reconciles rows, then price + availability", async () => {
     const inner = vi.fn(async (_path: string) => ({ id: 1 }));
     const transport: Transport = (async <T,>(path: string): Promise<T> => {
       await inner(path);
@@ -671,13 +710,16 @@ describe("retry and duplicate prevention", () => {
     draft.backendIds = { propertyId: 10, unitId: 20, listingId: 30 };
     const result = await submitListingDraft(draft, transport);
     expect(result.ok).toBe(true);
-    expect(inner).toHaveBeenCalledTimes(2);
+    expect(inner).toHaveBeenCalledTimes(5);
+    expect(inner).toHaveBeenNthCalledWith(1, "/api/v1/owner/properties/10");
+    expect(inner).toHaveBeenNthCalledWith(2, "/api/v1/owner/units/20");
+    expect(inner).toHaveBeenNthCalledWith(3, "/api/v1/owner/listings/30");
     expect(inner).toHaveBeenNthCalledWith(
-      1,
+      4,
       "/api/v1/owner/listings/30/price-components"
     );
     expect(inner).toHaveBeenNthCalledWith(
-      2,
+      5,
       "/api/v1/owner/listings/30/availability"
     );
   });
@@ -691,8 +733,247 @@ describe("retry and duplicate prevention", () => {
     expect(calls.map((c) => c.path)).toEqual([
       "/api/v1/owner/properties/10/units",
       "/api/v1/owner/listings",
+      "/api/v1/owner/properties/10",
+      "/api/v1/owner/units/20",
+      "/api/v1/owner/listings/30",
       "/api/v1/owner/listings/30/price-components",
       "/api/v1/owner/listings/30/availability",
     ]);
+  });
+});
+
+describe("ensureDraftListing (early DRAFT for photos)", () => {
+  /** Photos-chapter state: no price, move-in, or name. */
+  function earlyDraft(): ListingDraft {
+    const d = validDraft();
+    d.pricing.rent = "";
+    d.pricing.rentBasis = "";
+    d.availability.mode = "";
+    d.availability.date = "";
+    d.listing.title = "";
+    return d;
+  }
+
+  it("creates property/unit/listing with a placeholder title", async () => {
+    const { calls, transport } = okTransport({ property: 10, unit: 20, listing: 30 });
+    const result = await ensureDraftListing(earlyDraft(), transport);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ids).toEqual({ propertyId: 10, unitId: 20, listingId: 30 });
+    expect(calls.map((c) => c.path)).toEqual([
+      "/api/v1/owner/properties",
+      "/api/v1/owner/properties/10/units",
+      "/api/v1/owner/listings",
+    ]);
+    const listingBody = calls[2].body as Record<string, unknown>;
+    expect(isPlaceholderTitle(listingBody["title"] as string)).toBe(true);
+    expect(listingBody["title"]).toContain("draft-1");
+    // Derived-or-default basis, never blank: backend requires non-null.
+    expect(listingBody["rent_basis"]).toBe("PER_PERSON");
+  });
+
+  it("skips already-created steps without network calls for them", async () => {
+    const calls: string[] = [];
+    const transport: Transport = async <T,>(path: string): Promise<T> => {
+      calls.push(path);
+      return { id: 99 } as T;
+    };
+    const draft = earlyDraft();
+    draft.backendIds = { propertyId: 10, unitId: 20, listingId: null };
+    const result = await ensureDraftListing(draft, transport);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ids).toEqual({ propertyId: 10, unitId: 20, listingId: 99 });
+    expect(calls).toEqual(["/api/v1/owner/listings"]);
+  });
+
+  it("reuses an existing property without POSTing a duplicate", async () => {
+    const calls: string[] = [];
+    const transport: Transport = async <T,>(path: string): Promise<T> => {
+      calls.push(path);
+      return { id: 77 } as T;
+    };
+    const draft = earlyDraft();
+    draft.propertySource = "existing";
+    draft.backendIds = { propertyId: 42, unitId: null, listingId: null };
+    const result = await ensureDraftListing(draft, transport);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ids).toEqual({ propertyId: 42, unitId: 77, listingId: 77 });
+    expect(calls).toEqual([
+      "/api/v1/owner/properties/42/units",
+      "/api/v1/owner/listings",
+    ]);
+    expect(calls).not.toContain("/api/v1/owner/properties");
+  });
+
+  it("repeated ensures are idempotent (no new network calls)", async () => {
+    const inner = vi.fn(async (_path: string) => ({ id: 30 }));
+    const transport: Transport = (async <T,>(path: string): Promise<T> => {
+      await inner(path);
+      return { id: 30 } as T;
+    }) as Transport;
+    const draft = earlyDraft();
+    const first = await ensureDraftListing(draft, transport);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const second = await ensureDraftListing(
+      { ...draft, backendIds: first.ids },
+      transport
+    );
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.ids).toEqual(first.ids);
+    expect(inner).toHaveBeenCalledTimes(3);
+  });
+
+  it("adopts its own placeholder listing after a lost response", async () => {
+    const draft = earlyDraft();
+    const posts: string[] = [];
+    const transport: Transport = async <T,>(
+      path: string,
+      body: unknown,
+      method: "POST" | "PUT" | "GET" | "PATCH"
+    ): Promise<T> => {
+      if (method === "GET") {
+        return [
+          {
+            id: 1127,
+            rental_unit_id: 20,
+            title: `Untitled listing ${draft.id}`,
+            rent_basis: "PER_PERSON",
+            status: "DRAFT",
+            price_components: [],
+            photos: [],
+            created_at: new Date().toISOString(),
+          },
+        ] as T;
+      }
+      if (path === "/api/v1/owner/properties") return { id: 10 } as T;
+      if (path.endsWith("/units")) return { id: 20 } as T;
+      if (path === "/api/v1/owner/listings") {
+        posts.push(path);
+        throw apiError(409, "Rental unit already has an active listing");
+      }
+      return {} as T;
+    };
+    const result = await ensureDraftListing(draft, transport);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ids.listingId).toBe(1127);
+    expect(posts).toHaveLength(1);
+  });
+
+  it("never adopts another draft's placeholder listing", async () => {
+    const draft = earlyDraft();
+    const transport: Transport = async <T,>(
+      path: string,
+      body: unknown,
+      method: "POST" | "PUT" | "GET" | "PATCH"
+    ): Promise<T> => {
+      if (method === "GET") {
+        return [
+          {
+            id: 999,
+            rental_unit_id: 20,
+            title: "Untitled listing draft-OTHER",
+            rent_basis: "PER_PERSON",
+            status: "DRAFT",
+            price_components: [],
+            photos: [],
+            created_at: new Date().toISOString(),
+          },
+        ] as T;
+      }
+      if (path === "/api/v1/owner/properties") return { id: 10 } as T;
+      if (path.endsWith("/units")) return { id: 20 } as T;
+      if (path === "/api/v1/owner/listings") {
+        throw apiError(409, "Rental unit already has an active listing");
+      }
+      return {} as T;
+    };
+    const result = await ensureDraftListing(draft, transport);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.failedStep).toBe("listing");
+    expect(result.ids.listingId).toBeNull();
+  });
+});
+
+describe("send reconciles early draft-save rows", () => {
+  function earlyDraft(): ListingDraft {
+    const d = validDraft();
+    d.pricing.rent = "";
+    d.pricing.rentBasis = "";
+    d.availability.mode = "";
+    d.availability.date = "";
+    d.listing.title = "";
+    return d;
+  }
+
+  it("replaces placeholder title and temp basis before publish can happen", async () => {
+    const seen: { path: string; body: unknown; method: string }[] = [];
+    const transport: Transport = async <T,>(
+      path: string,
+      body: unknown,
+      method: "POST" | "PUT" | "GET" | "PATCH"
+    ): Promise<T> => {
+      seen.push({ path, body, method });
+      if (path === "/api/v1/owner/properties") return { id: 10 } as T;
+      if (path.endsWith("/units")) return { id: 20 } as T;
+      if (path === "/api/v1/owner/listings") return { id: 30 } as T;
+      if (path.endsWith("/price-components")) return [] as T;
+      return {} as T;
+    };
+    // Ensure with incomplete answers (placeholder title, default basis).
+    const ensured = await ensureDraftListing(earlyDraft(), transport);
+    expect(ensured.ok).toBe(true);
+    if (!ensured.ok) return;
+    const created = seen.find((c) => c.path === "/api/v1/owner/listings");
+    expect(isPlaceholderTitle((created?.body as Record<string, unknown>)["title"] as string)).toBe(true);
+
+    // Owner completes the wizard with a different rent basis; the full
+    // send reconciles every row to the final answers.
+    const draft = validDraft();
+    draft.pricing.rentBasis = "room";
+    draft.backendIds = ensured.ids;
+    const sent = await submitListingDraft(draft, transport);
+    expect(sent.ok).toBe(true);
+    const patch = seen.find(
+      (c) => c.path === "/api/v1/owner/listings/30" && c.method === "PATCH"
+    );
+    expect(patch).toBeDefined();
+    const patchBody = patch?.body as Record<string, unknown>;
+    expect(patchBody["title"]).toBe("Sunny PG near campus");
+    expect(patchBody["rent_basis"]).toBe("PER_ROOM");
+    expect(isPlaceholderTitle(patchBody["title"] as string)).toBe(false);
+    // No placeholder value may survive past the initial create: every
+    // later request body must be placeholder-free.
+    const createIndex = seen.indexOf(created as (typeof seen)[number]);
+    const later = seen.slice(createIndex + 1).map((c) => JSON.stringify(c.body));
+    expect(later.some((t) => t.includes("Untitled listing"))).toBe(false);
+    expect(later.some((t) => t.includes("PER_PERSON"))).toBe(false);
+  });
+
+  it("fails the send closed when the listing sync PATCH fails", async () => {
+    const transport: Transport = async <T,>(
+      path: string,
+      body: unknown,
+      method: "POST" | "PUT" | "GET" | "PATCH"
+    ): Promise<T> => {
+      if (path === "/api/v1/owner/properties") return { id: 10 } as T;
+      if (path.endsWith("/units")) return { id: 20 } as T;
+      if (path === "/api/v1/owner/listings") return { id: 30 } as T;
+      if (path === "/api/v1/owner/listings/30") {
+        throw apiError(422, "title cannot be blank");
+      }
+      if (path.endsWith("/price-components")) return [] as T;
+      return {} as T;
+    };
+    const result = await submitListingDraft(validDraft(), transport);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // Placeholder (or stale) values never proceed to price/publish.
+    expect(result.failedStep).toBe("listing");
   });
 });

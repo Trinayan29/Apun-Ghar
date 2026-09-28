@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import auth as auth_module
 from app.main import app
+from app.storage import FakeStorageService, get_storage_or_none
 from app.models import (
     Listing,
     ListingPhoto,
@@ -83,9 +84,8 @@ def valid_price(**kwargs):
 
 def valid_photo_init(**kwargs):
     base = {
-        "media_type": "PHOTO",
-        "storage_key": f"t2e-photo-{uuid.uuid4().hex}",
-        "mime": "image/jpeg",
+        "content_type": "image/jpeg",
+        "size_bytes": 1024,
         "width": 1920,
         "height": 1080,
         "display_order": 0,
@@ -93,6 +93,10 @@ def valid_photo_init(**kwargs):
     }
     base.update(kwargs)
     return base
+
+
+def _fake():
+    return app.dependency_overrides[get_storage_or_none]()
 
 
 @pytest.fixture(scope="module")
@@ -154,7 +158,13 @@ def cleanup(engine):
 
 
 @pytest.fixture()
-def client(engine):
+def storage_fake():
+    return FakeStorageService()
+
+
+@pytest.fixture()
+def client(engine, storage_fake):
+    app.dependency_overrides[get_storage_or_none] = lambda: storage_fake
     cleanup(engine)
     c = TestClient(app, raise_server_exceptions=False)
     yield c
@@ -255,7 +265,7 @@ def test_unauthenticated_401(client):
         == 401
     )
     assert (
-        client.post("/api/v1/owner/listings/1/photos:confirm", json={}).status_code
+        client.post("/api/v1/owner/listings/1/photos/1/confirm", json={}).status_code
         == 401
     )
 
@@ -302,7 +312,7 @@ def test_user_forbidden_403(client):
     )
     assert (
         authed(client, uid=USER_UID)
-        .post("/api/v1/owner/listings/1/photos:confirm", json={})
+        .post("/api/v1/owner/listings/1/photos/1/confirm", json={})
         .status_code
         == 403
     )
@@ -351,7 +361,7 @@ def test_admin_forbidden_403(client, engine):
     )
     assert (
         authed(client, uid=ADMIN_UID)
-        .post("/api/v1/owner/listings/1/photos:confirm", json={})
+        .post("/api/v1/owner/listings/1/photos/1/confirm", json={})
         .status_code
         == 403
     )
@@ -1210,7 +1220,16 @@ def test_photo_init_201(client):
         json=valid_photo_init(),
     )
     assert res.status_code == 201, res.text
-    assert res.json()["upload_status"] == "PENDING"
+    data = res.json()
+    assert data["upload_status"] == "PENDING"
+    assert data["mime"] == "image/jpeg"
+    assert data["upload_url"].startswith("https://fake-b2.test/upload/")
+    assert data["upload_expires_in"] == 900
+    assert data["storage_key"].startswith(
+        f"listings/{created['id']}/photos/{data['id']}."
+    )
+    assert data["storage_key"].endswith(".jpg")
+    assert data["view_url"] is None
 
 
 def test_photo_init_invalid_422(client):
@@ -1225,20 +1244,16 @@ def test_photo_init_invalid_422(client):
     assert res.status_code == 422, res.text
 
 
-def test_photo_duplicate_key_409(client):
+def test_photo_init_invalid_mime_422(client):
     provision_owner(client, UID)
     pid = create_property(client, UID)
     unit_id = create_unit(client, UID, pid)
     created = create_listing(client, UID, unit_id)
-    payload = valid_photo_init(storage_key="t2e-dup-key-1")
-    res1 = authed(client, uid=UID).post(
-        f"/api/v1/owner/listings/{created['id']}/photos:init", json=payload
+    res = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{created['id']}/photos:init",
+        json=valid_photo_init(content_type="image/gif"),
     )
-    assert res1.status_code == 201, res1.text
-    res2 = authed(client, uid=UID).post(
-        f"/api/v1/owner/listings/{created['id']}/photos:init", json=payload
-    )
-    assert res2.status_code == 409, res2.text
+    assert res.status_code == 422, res.text
 
 
 def test_photo_confirm_ready(client):
@@ -1246,18 +1261,22 @@ def test_photo_confirm_ready(client):
     pid = create_property(client, UID)
     unit_id = create_unit(client, UID, pid)
     created = create_listing(client, UID, unit_id)
-    key = f"t2e-confirm-{uuid.uuid4().hex}"
     init = authed(client, uid=UID).post(
         f"/api/v1/owner/listings/{created['id']}/photos:init",
-        json=valid_photo_init(storage_key=key),
+        json=valid_photo_init(),
     )
     assert init.status_code == 201, init.text
+    pid_ = init.json()["id"]
+    _fake().put_object(init.json()["storage_key"], 1024, "image/jpeg")
     res = authed(client, uid=UID).post(
-        f"/api/v1/owner/listings/{created['id']}/photos:confirm",
-        json={"storage_key": key},
+        f"/api/v1/owner/listings/{created['id']}/photos/{pid_}/confirm",
+        json={},
     )
     assert res.status_code == 200, res.text
-    assert res.json()["upload_status"] == "READY"
+    data = res.json()
+    assert data["upload_status"] == "READY"
+    assert data["size_bytes"] == 1024
+    assert data["view_url"].startswith("https://fake-b2.test/view/")
 
 
 def test_photo_confirm_missing_404(client):
@@ -1266,8 +1285,8 @@ def test_photo_confirm_missing_404(client):
     unit_id = create_unit(client, UID, pid)
     created = create_listing(client, UID, unit_id)
     res = authed(client, uid=UID).post(
-        f"/api/v1/owner/listings/{created['id']}/photos:confirm",
-        json={"storage_key": "t2e-no-such-key"},
+        f"/api/v1/owner/listings/{created['id']}/photos/999999/confirm",
+        json={},
     )
     assert res.status_code == 404, res.text
 
@@ -1279,15 +1298,15 @@ def test_photo_confirm_wrong_listing_404(client):
     u2 = create_unit(client, UID, pid)
     l1 = create_listing(client, UID, u1)
     l2 = create_listing(client, UID, u2)
-    key = f"t2e-wrong-{uuid.uuid4().hex}"
     init = authed(client, uid=UID).post(
         f"/api/v1/owner/listings/{l1['id']}/photos:init",
-        json=valid_photo_init(storage_key=key),
+        json=valid_photo_init(),
     )
     assert init.status_code == 201, init.text
+    other_id = init.json()["id"]
     res = authed(client, uid=UID).post(
-        f"/api/v1/owner/listings/{l2['id']}/photos:confirm",
-        json={"storage_key": key},
+        f"/api/v1/owner/listings/{l2['id']}/photos/{other_id}/confirm",
+        json={},
     )
     assert res.status_code == 404, res.text
 
@@ -1297,19 +1316,21 @@ def test_photo_confirm_twice_422(client):
     pid = create_property(client, UID)
     unit_id = create_unit(client, UID, pid)
     created = create_listing(client, UID, unit_id)
-    key = f"t2e-twice-{uuid.uuid4().hex}"
-    authed(client, uid=UID).post(
+    init = authed(client, uid=UID).post(
         f"/api/v1/owner/listings/{created['id']}/photos:init",
-        json=valid_photo_init(storage_key=key),
+        json=valid_photo_init(),
     )
+    assert init.status_code == 201, init.text
+    pid_ = init.json()["id"]
+    _fake().put_object(init.json()["storage_key"], 1024, "image/jpeg")
     first = authed(client, uid=UID).post(
-        f"/api/v1/owner/listings/{created['id']}/photos:confirm",
-        json={"storage_key": key},
+        f"/api/v1/owner/listings/{created['id']}/photos/{pid_}/confirm",
+        json={},
     )
     assert first.status_code == 200, first.text
     second = authed(client, uid=UID).post(
-        f"/api/v1/owner/listings/{created['id']}/photos:confirm",
-        json={"storage_key": key},
+        f"/api/v1/owner/listings/{created['id']}/photos/{pid_}/confirm",
+        json={},
     )
     assert second.status_code == 422, second.text
 
@@ -1350,30 +1371,28 @@ def blank_property_field(engine, pid, field, value):
 
 
 def add_ready_photo(client, uid, lid, display_order=0, is_cover=False):
-    key = f"t2e-2b-{uuid.uuid4().hex}"
     init = authed(client, uid=uid).post(
         f"/api/v1/owner/listings/{lid}/photos:init",
         json=valid_photo_init(
-            storage_key=key,
             display_order=display_order,
             is_cover=is_cover,
         ),
     )
     assert init.status_code == 201, init.text
+    pid_ = init.json()["id"]
+    _fake().put_object(init.json()["storage_key"], 1024, "image/jpeg")
     conf = authed(client, uid=uid).post(
-        f"/api/v1/owner/listings/{lid}/photos:confirm",
-        json={"storage_key": key},
+        f"/api/v1/owner/listings/{lid}/photos/{pid_}/confirm",
+        json={},
     )
     assert conf.status_code == 200, conf.text
     return conf.json()
 
 
 def add_pending_photo(client, uid, lid, display_order=0, is_cover=False):
-    key = f"t2e-2b-{uuid.uuid4().hex}"
     init = authed(client, uid=uid).post(
         f"/api/v1/owner/listings/{lid}/photos:init",
         json=valid_photo_init(
-            storage_key=key,
             display_order=display_order,
             is_cover=is_cover,
         ),
@@ -1922,16 +1941,16 @@ def test_photo_confirm_metadata_persists(client):
     pid = create_property(client, UID)
     unit_id = create_unit(client, UID, pid)
     created = create_listing(client, UID, unit_id)
-    key = f"t2e-meta-{uuid.uuid4().hex}"
-    authed(client, uid=UID).post(
+    init = authed(client, uid=UID).post(
         f"/api/v1/owner/listings/{created['id']}/photos:init",
-        json=valid_photo_init(storage_key=key),
+        json=valid_photo_init(),
     )
+    assert init.status_code == 201, init.text
+    pid_ = init.json()["id"]
+    _fake().put_object(init.json()["storage_key"], 2048, "image/jpeg")
     res = authed(client, uid=UID).post(
-        f"/api/v1/owner/listings/{created['id']}/photos:confirm",
+        f"/api/v1/owner/listings/{created['id']}/photos/{pid_}/confirm",
         json={
-            "storage_key": key,
-            "mime": "image/png",
             "width": 800,
             "height": 600,
             "display_order": 4,
@@ -1940,7 +1959,8 @@ def test_photo_confirm_metadata_persists(client):
     )
     assert res.status_code == 200, res.text
     data = res.json()
-    assert data["mime"] == "image/png"
+    assert data["mime"] == "image/jpeg"
+    assert data["size_bytes"] == 2048
     assert data["width"] == 800
     assert data["height"] == 600
     assert data["display_order"] == 4

@@ -13,9 +13,12 @@ import {
   mapFloorNo,
   mapFurnishing,
   mapRentBasis,
+  isPlaceholderTitle,
+  placeholderTitle,
   planPhotoUploads,
   resolveAmenityIds,
   serializeAvailability,
+  serializeDraftListing,
   serializeListing,
   serializePriceComponents,
   serializeProperty,
@@ -217,6 +220,41 @@ describe("unit composition mapping", () => {
     expect(u.is_independent).toBe(true);
     expect(u.food_status).toBe("SEPARATE");
     expect(serializeUnit(baseDraft()).food_status).toBeNull();
+  });
+});
+
+describe("draft-save placeholder listing", () => {
+  it("builds a unique-per-draft placeholder title", () => {
+    const a = placeholderTitle("draft-1");
+    const b = placeholderTitle("draft-2");
+    expect(a).toContain("Untitled listing");
+    expect(a).toContain("draft-1");
+    expect(a).not.toBe(b);
+    expect(isPlaceholderTitle(a)).toBe(true);
+    expect(isPlaceholderTitle("Sunny PG near campus")).toBe(false);
+    expect(isPlaceholderTitle("Untitled listing draft-1")).toBe(true);
+  });
+
+  it("serializes an early draft with placeholder title only", () => {
+    const d = baseDraft();
+    d.listing.title = "";
+    d.pricing.rentBasis = "";
+    const p = serializeDraftListing(d, 20);
+    expect(p.rental_unit_id).toBe(20);
+    expect(isPlaceholderTitle(p.title)).toBe(true);
+    expect(p.title).toContain("test-draft");
+    // Derived-or-default basis: unset answers fall back, never blank.
+    expect(p.rent_basis).toBe("PER_PERSON");
+    expect(p.availability_status).toBe("AVAILABLE_NOW");
+  });
+
+  it("derives the real rent basis when the draft already has it", () => {
+    const d = baseDraft();
+    d.pricing.rentBasis = "room";
+    const p = serializeDraftListing(d, 20);
+    expect(p.rent_basis).toBe("PER_ROOM");
+    // Title stays a placeholder until the send-time sync.
+    expect(isPlaceholderTitle(p.title)).toBe(true);
   });
 });
 

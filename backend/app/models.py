@@ -574,6 +574,7 @@ class ListingPhoto(Base):
     )
     storage_key: Mapped[str] = mapped_column(Text, unique=True)
     mime: Mapped[str | None] = mapped_column(String(100))
+    size_bytes: Mapped[int | None]
     width: Mapped[int | None]
     height: Mapped[int | None]
     display_order: Mapped[int] = mapped_column(default=0)

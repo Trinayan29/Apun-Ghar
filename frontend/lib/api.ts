@@ -110,6 +110,34 @@ export function apiGet<T>(path: string): Promise<T> {
   return request<T>(path);
 }
 
+/** Authenticated JSON PATCH. Same auth as apiPost. */
+export function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, { method: "PATCH", body });
+}
+
+/** Authenticated DELETE. Resolves to null on success (204 has no body). */
+export async function apiDelete(path: string): Promise<null> {
+  const headers = {
+    "Content-Type": "application/json",
+    ...(await authHeaders()),
+  };
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method: "DELETE",
+    headers,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = (await res.json()) as { detail?: unknown };
+      if (typeof data?.detail === "string") detail = data.detail;
+    } catch {
+      // keep statusText
+    }
+    throw new ApiError(res.status, detail);
+  }
+  return null;
+}
+
 export interface OwnerSignupPayload {
   display_name: string;
   phone_number: string;
@@ -191,7 +219,84 @@ export interface OwnerPriceItem {
 
 export interface OwnerPhotoItem {
   id: number;
+  listing_id: number;
+  storage_key: string;
+  mime: string | null;
+  size_bytes: number | null;
+  width: number | null;
+  height: number | null;
+  display_order: number;
+  is_cover: boolean;
+  upload_status: string;
+  media_type: string;
+  view_url: string | null;
 }
+
+export interface PhotoInitPayload {
+  content_type: "image/jpeg" | "image/png" | "image/webp";
+  size_bytes: number;
+  width?: number | null;
+  height?: number | null;
+  display_order?: number;
+  is_cover?: boolean;
+}
+
+export interface PhotoInitResponse extends OwnerPhotoItem {
+  upload_url: string;
+  upload_expires_in: number;
+}
+
+export interface PhotoConfirmPayload {
+  width?: number | null;
+  height?: number | null;
+  display_order?: number | null;
+  is_cover?: boolean | null;
+}
+
+/** Start an upload: returns the photo row plus a short-lived PUT grant. */
+export const initListingPhoto = (
+  listingId: number,
+  payload: PhotoInitPayload
+): Promise<PhotoInitResponse> =>
+  apiPost<PhotoInitResponse>(
+    `/api/v1/owner/listings/${listingId}/photos:init`,
+    payload
+  );
+
+/** Confirm after the browser PUTs bytes directly to storage. */
+export const confirmListingPhoto = (
+  listingId: number,
+  photoId: number,
+  payload: PhotoConfirmPayload = {}
+): Promise<OwnerPhotoItem> =>
+  apiPost<OwnerPhotoItem>(
+    `/api/v1/owner/listings/${listingId}/photos/${photoId}/confirm`,
+    payload
+  );
+
+/** Delete a photo row and its storage object. */
+export const deleteListingPhoto = (
+  listingId: number,
+  photoId: number
+): Promise<null> =>
+  apiDelete(`/api/v1/owner/listings/${listingId}/photos/${photoId}`);
+
+/** Reorder / change cover. */
+export const patchListingPhoto = (
+  listingId: number,
+  photoId: number,
+  payload: { display_order?: number | null; is_cover?: boolean | null }
+): Promise<OwnerPhotoItem> =>
+  apiPatch<OwnerPhotoItem>(
+    `/api/v1/owner/listings/${listingId}/photos/${photoId}`,
+    payload
+  );
+
+/** Authoritative listing read (photos carry view URLs when READY). */
+export const getOwnerListing = (
+  listingId: number
+): Promise<OwnerListingItem> =>
+  apiGet<OwnerListingItem>(`/api/v1/owner/listings/${listingId}`);
 
 export interface OwnerListingItem {
   id: number;

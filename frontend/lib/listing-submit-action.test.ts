@@ -6,12 +6,15 @@
  * these outcomes and is covered by typecheck + build, not jsdom.
  */
 import { describe, expect, it } from "vitest";
-import { emptyDraft, type ListingDraft } from "./listing-draft";
+import { emptyDraft, type BackendIds, type ListingDraft } from "./listing-draft";
 import {
   createSubmitGuard,
+  ensureDraftListingIds,
+  ensureListingIdForDraft,
   runSubmitAction,
   submitErrorMessage,
   submitSuccessMessage,
+  validateForDraftSave,
   validateForSubmit,
 } from "./listing-submit-action";
 import type { Transport } from "./listing-submit-flow";
@@ -115,6 +118,9 @@ describe("validateForSubmit", () => {
       status: "local" as const,
       cover: i === 0,
       order: i,
+      backendId: null,
+      viewUrl: null,
+      error: null,
     }));
     expect(validateForSubmit(d)).toMatchObject({ step: "photos" });
   });
@@ -157,6 +163,9 @@ describe("runSubmitAction", () => {
       "/api/v1/owner/properties",
       "/api/v1/owner/properties/10/units",
       "/api/v1/owner/listings",
+      "/api/v1/owner/properties/10",
+      "/api/v1/owner/units/20",
+      "/api/v1/owner/listings/30",
       "/api/v1/owner/listings/30/price-components",
       "/api/v1/owner/listings/30/availability",
     ]);
@@ -200,8 +209,8 @@ describe("runSubmitAction", () => {
     expect(second).toEqual({ type: "busy" });
     const firstOutcome = await first;
     expect(firstOutcome.type).toBe("done");
-    // One full 5-call submission only — the double invocation added zero.
-    expect(calls).toHaveLength(5);
+    // One full 8-call submission only — the double invocation added zero.
+    expect(calls).toHaveLength(8);
   });
 
   it("persists partial ids + progress when listing creation fails", async () => {
@@ -243,7 +252,198 @@ describe("runSubmitAction", () => {
     });
     expect(outcome.type).toBe("done");
     if (outcome.type !== "done" || !outcome.result.ok) return;
-    expect(calls).toEqual(["/api/v1/owner/listings/30/availability"]);
+    expect(calls).toEqual([
+      "/api/v1/owner/properties/10",
+      "/api/v1/owner/units/20",
+      "/api/v1/owner/listings/30",
+      "/api/v1/owner/listings/30/availability",
+    ]);
+  });
+});
+
+describe("validateForDraftSave", () => {
+  /** Photos-chapter state: price/move-in/name intentionally blank. */
+  function photosStageDraft(): ListingDraft {
+    const d = submittableDraft();
+    d.pricing.rent = "";
+    d.pricing.rentBasis = "";
+    d.availability.mode = "";
+    d.availability.date = "";
+    d.listing.title = "";
+    return d;
+  }
+
+  it("passes before price/move-in/name are filled", () => {
+    expect(validateForDraftSave(photosStageDraft())).toBeNull();
+  });
+
+  it("still rejects missing area with the real blocker", () => {
+    const d = photosStageDraft();
+    d.place.area = null;
+    d.place.areaCustomName = "";
+    expect(validateForDraftSave(d)).toMatchObject({ step: "where" });
+  });
+
+  it("accepts a custom area without a canonical one", () => {
+    const d = photosStageDraft();
+    d.place.area = null;
+    d.place.areaCustomName = "Jyotikuchi";
+    expect(validateForDraftSave(d)).toBeNull();
+  });
+
+  it("skips Where/Name for existing-property drafts", () => {
+    const d = photosStageDraft();
+    d.propertySource = "existing";
+    d.backendIds = { propertyId: 42, unitId: null, listingId: null };
+    d.place.area = null;
+    d.place.placeName = "";
+    expect(validateForDraftSave(d)).toBeNull();
+  });
+});
+
+describe("ensureDraftListingIds", () => {
+  function photosStageDraft(): ListingDraft {
+    const d = submittableDraft();
+    d.pricing.rent = "";
+    d.pricing.rentBasis = "";
+    d.availability.mode = "";
+    d.availability.date = "";
+    d.listing.title = "";
+    return d;
+  }
+
+  it("creates ids without price/move-in/name and persists them", async () => {
+    const { calls, transport } = okTransport();
+    const persisted: unknown[] = [];
+    const outcome = await ensureDraftListingIds({
+      draft: photosStageDraft(),
+      guard: createSubmitGuard(),
+      transport,
+      persist: (ids) => persisted.push(ids),
+    });
+    expect(outcome.type).toBe("done");
+    if (outcome.type !== "done" || outcome.error !== null) return;
+    expect(outcome.ids).toEqual({ propertyId: 10, unitId: 20, listingId: 30 });
+    expect(persisted).toEqual([outcome.ids]);
+    expect(calls).toEqual([
+      "/api/v1/owner/properties",
+      "/api/v1/owner/properties/10/units",
+      "/api/v1/owner/listings",
+    ]);
+  });
+
+  it("returns the validation blocker instead of a network error", async () => {
+    const { calls, transport } = okTransport();
+    const d = photosStageDraft();
+    d.place.area = null;
+    d.place.areaCustomName = "";
+    const outcome = await ensureDraftListingIds({
+      draft: d,
+      guard: createSubmitGuard(),
+      transport,
+      persist: () => {},
+    });
+    expect(outcome).toMatchObject({ type: "invalid", blocker: { step: "where" } });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("a concurrent second ensure gets busy", async () => {
+    const { transport } = okTransport();
+    const guard = createSubmitGuard();
+    const persist = () => {};
+    const first = ensureDraftListingIds({
+      draft: photosStageDraft(),
+      guard,
+      transport,
+      persist,
+    });
+    const second = await ensureDraftListingIds({
+      draft: photosStageDraft(),
+      guard,
+      transport,
+      persist,
+    });
+    expect(second).toEqual({ type: "busy" });
+    expect((await first).type).toBe("done");
+  });
+
+  it("formats transport failures as save errors, keeping partial ids", async () => {
+    const transport: Transport = async <T,>(path: string): Promise<T> => {
+      if (path === "/api/v1/owner/properties") return { id: 10 } as T;
+      throw apiError(403, "forbidden");
+    };
+    const persisted: unknown[] = [];
+    const outcome = await ensureDraftListingIds({
+      draft: photosStageDraft(),
+      guard: createSubmitGuard(),
+      transport,
+      persist: (ids) => persisted.push(ids),
+    });
+    expect(outcome.type).toBe("done");
+    if (outcome.type !== "done" || outcome.error === null) return;
+    expect(outcome.error).toMatch(/room details|forbidden/);
+    expect(persisted).toEqual([
+      { propertyId: 10, unitId: null, listingId: null },
+    ]);
+  });
+});
+
+describe("ensureListingIdForDraft (stale-store regression)", () => {
+  function photosStageDraft(): ListingDraft {
+    const d = submittableDraft();
+    d.pricing.rent = "";
+    d.pricing.rentBasis = "";
+    d.availability.mode = "";
+    d.availability.date = "";
+    d.listing.title = "";
+    return d;
+  }
+
+  it("succeeds from outcome ids even when a store re-read is stale", async () => {
+    // Models React batching: persist is queued, so a synchronous re-read
+    // (what getDraft returns in the same tick) still sees pre-write state.
+    // The old implementation re-read the store here and falsely failed.
+    let committed: unknown = null;
+    let pending: unknown = null;
+    const persist = (ids: unknown) => {
+      // Deferred like setState: queued, NOT visible to an immediate re-read.
+      pending = ids;
+    };
+    const readStore = (): unknown => committed;
+    const { transport } = okTransport();
+    const outcome = await ensureListingIdForDraft({
+      draft: photosStageDraft(),
+      guard: createSubmitGuard(),
+      transport,
+      persist: persist as (ids: BackendIds) => void,
+    });
+    expect(outcome).toEqual({ ok: true, listingId: 30 });
+    // Persist ran (ids captured), yet a synchronous re-read sees nothing —
+    // the old implementation failed exactly here.
+    expect(pending).toEqual({ propertyId: 10, unitId: 20, listingId: 30 });
+    expect(readStore()).toBeNull();
+  });
+
+  it("still surfaces validation blockers without any network", async () => {
+    const { calls, transport } = okTransport();
+    const d = submittableDraft();
+    d.pricing.rent = "";
+    d.pricing.rentBasis = "";
+    d.availability.mode = "";
+    d.availability.date = "";
+    d.listing.title = "";
+    d.place.area = null;
+    d.place.areaCustomName = "";
+    const outcome = await ensureListingIdForDraft({
+      draft: d,
+      guard: createSubmitGuard(),
+      transport,
+      persist: () => {},
+    });
+    expect(outcome).toMatchObject({ ok: false });
+    if (outcome.ok) return;
+    expect(outcome.message).toMatch(/area/i);
+    expect(calls).toHaveLength(0);
   });
 });
 

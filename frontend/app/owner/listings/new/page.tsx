@@ -6,14 +6,22 @@ import { useAuth } from "@/components/AuthProvider";
 import {
   ApiError,
   getMe,
+  getOwnerListing,
+  type OwnerListingItem,
   type OwnerPropertyItem,
 } from "@/lib/api";
+import {
+  publishListingFlow,
+  sweepPendingUploads,
+  sweepTargetListingId,
+} from "@/lib/publish-flow";
 import { usePropertyChooser } from "./_components/use-property-chooser";
 import { FormError } from "@/components/auth-ui";
 import { WizardActions, WizardShell } from "@/components/ui/wizard";
 import { ListingDraftStoreProvider, useListingDrafts } from "@/components/listing/draft-store";
 import {
   createSubmitGuard,
+  ensureListingIdForDraft,
   runSubmitAction,
   submitErrorMessage,
   type SubmitGuard,
@@ -28,6 +36,7 @@ import {
   prefillPlaceFromProperty,
   prevChapter,
   suggestTitle,
+  normalizeBackendId,
   validateChooseProperty,
   validateKind,
   validateMoveIn,
@@ -82,6 +91,19 @@ function Wizard() {
     SubmitResult,
     { ok: true }
   > | null>(null);
+
+  // Real publish state (Step 14, after send). Backend is authoritative:
+  // success reloads the listing; failure keeps DRAFT and shows the error.
+  const publishGuardRef = useRef(false);
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [publishedListing, setPublishedListing] =
+    useState<OwnerListingItem | null>(null);
+
+  // Original File bytes for local photo tiles, keyed by tile id. Shared
+  // with the photos chapter so the Step-14 send can finish pending uploads.
+  // Session-only by design: nothing binary ever touches localStorage.
+  const [photoFiles] = useState(() => new Map<string, File>());
 
   // Owner gate: same behavior as the owner dashboard (unauthenticated ->
   // /owner/login; non-OWNER -> renter home). No second auth mechanism.
@@ -252,9 +274,26 @@ function Wizard() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, [draft, chapter, setCurrentChapter, router]);
 
+  // Upload local photo tiles that still have their File bytes (same
+  // session). Runs after a send creates the backend listing, and backs the
+  // photos chapter retry path. Best-effort per tile; failures stay visible
+  // as failed tiles with retry.
+  const uploadPendingPhotos = useCallback(
+    async (draftId: string, listingId: number) => {
+      await sweepPendingUploads({
+        listingId,
+        readPhotos: () => getDraft(draftId)?.photos ?? [],
+        writePhotos: (photos) => updateDraft(draftId, { photos }),
+        files: photoFiles,
+      });
+    },
+    [getDraft, updateDraft, photoFiles]
+  );
+
   // Send action: validate all chapters, submit exactly once, persist
   // ids + progress on BOTH success and failure so retry resumes. Never
-  // touches photos, real publish, or amenities beyond the draft.
+  // touches real publish or amenities beyond the draft. On success, finishes
+  // any pending photo uploads now that the listing id exists.
   const handleSend = useCallback(async () => {
     if (!draft) return;
     setSending(true);
@@ -277,10 +316,76 @@ function Wizard() {
         return;
       }
       setSendResult(outcome.result);
+      const listingId = sweepTargetListingId(outcome.result);
+      if (listingId != null) await uploadPendingPhotos(draft.id, listingId);
     } finally {
       setSending(false);
     }
-  }, [draft, goChapter, updateDraft]);
+  }, [draft, goChapter, updateDraft, getDraft, uploadPendingPhotos]);
+
+  // Creates the backend DRAFT listing through draft-save validation when
+  // the photos chapter needs an id. No navigation; failures return the
+  // real blocker/transport message so the chapter never claims a network
+  // problem for a validation state.
+  const ensureListingId = useCallback(async (): Promise<
+    { ok: true; listingId: number } | { ok: false; message: string }
+  > => {
+    if (!draft) return { ok: false, message: "Draft is still loading." };
+    return ensureListingIdForDraft({
+      draft,
+      guard: submitGuardRef.current as SubmitGuard,
+      persist: (ids) => updateDraft(draft.id, { backendIds: ids }),
+    });
+  }, [draft, updateDraft]);
+
+  // Real publish: DRAFT -> PUBLISHED through the existing endpoint. Guards
+  // live server-side; failure keeps DRAFT and surfaces the backend message.
+  const handlePublish = useCallback(async () => {
+    if (!draft || publishGuardRef.current) return;
+    const listingId = normalizeBackendId(draft.backendIds?.listingId);
+    if (listingId == null) {
+      setPublishError("Send to Apun-Ghar first — then publish.");
+      return;
+    }
+    publishGuardRef.current = true;
+    setPublishing(true);
+    setPublishError(null);
+    try {
+      const outcome = await publishListingFlow(listingId);
+      if (!outcome.ok) {
+        setPublishError(outcome.error);
+        return;
+      }
+      // Authoritative state wins; the local preview simulation stays out
+      // of it so "live preview" copy never describes a real publish.
+      setPublishedListing(outcome.listing);
+    } finally {
+      setPublishing(false);
+      publishGuardRef.current = false;
+    }
+  }, [draft]);
+
+  // Authoritative lifecycle on the publish chapter: a backend PUBLISHED
+  // listing shows PUBLISHED state even after reload — the session-only
+  // published flag is never trusted on its own.
+  const statusListingId = draft
+    ? normalizeBackendId(draft.backendIds?.listingId)
+    : null;
+  useEffect(() => {
+    if (chapter !== "publish" || statusListingId == null) return;
+    if (publishedListing || publishing) return;
+    let cancelled = false;
+    void getOwnerListing(statusListingId)
+      .then((row) => {
+        if (!cancelled && row.status === "PUBLISHED") setPublishedListing(row);
+      })
+      .catch(() => {
+        // Unreachable/deleted listings simply keep the draft flow.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [chapter, statusListingId, publishedListing, publishing]);
 
   const content = useMemo(() => {
     if (!draft) return null;
@@ -377,6 +482,9 @@ function Wizard() {
           photos={draft.photos}
           onPhotos={(photos) => updateDraft(draft.id, { photos })}
           error={formError}
+          listingId={normalizeBackendId(draft.backendIds?.listingId)}
+          onEnsureListing={ensureListingId}
+          fileStore={photoFiles}
         />
       );
     if (chapter === "price")
@@ -416,12 +524,17 @@ function Wizard() {
           sending={sending}
           sendError={submitError}
           sendResult={sendResult}
+          listingId={normalizeBackendId(draft.backendIds?.listingId)}
+          onPublish={handlePublish}
+          publishing={publishing}
+          publishError={publishError}
+          published={publishedListing?.status === "PUBLISHED"}
         />
       );
     // Unreachable: jump targets are clamped to furthestChapter, which only
     // advances through validated Continue steps above.
     return null;
-  }, [draft, chapter, formError, updateDraft, goChapter, handleSend, sending, submitError, sendResult, properties, unitsCount, propertiesError, loadProperties, selectExistingProperty, selectNewProperty]);
+  }, [draft, chapter, formError, updateDraft, goChapter, handleSend, sending, submitError, sendResult, properties, unitsCount, propertiesError, loadProperties, selectExistingProperty, selectNewProperty, ensureListingId, handlePublish, publishing, publishError, publishedListing, photoFiles]);
 
   if (authError) {
     return (

@@ -1,3 +1,4 @@
+import os
 from datetime import date, datetime
 from typing import Literal
 
@@ -16,6 +17,18 @@ from .models import (
     Property,
     RentalUnit,
     User,
+)
+from .storage import (
+    ALLOWED_PHOTO_MIME,
+    B2_UPLOAD_EXPIRES_IN,
+    B2_VIEW_EXPIRES_IN,
+    MAX_PHOTO_BYTES,
+    MAX_PHOTOS_PER_LISTING,
+    StorageError,
+    StorageService,
+    get_storage_or_none,
+    photo_object_key,
+    require_storage,
 )
 
 router = APIRouter(prefix="/api/v1/owner/listings", tags=["owner-listings"])
@@ -96,12 +109,16 @@ class PhotoRead(BaseModel):
     listing_id: int
     storage_key: str
     mime: str | None
+    size_bytes: int | None = None
     width: int | None
     height: int | None
     display_order: int
     is_cover: bool
     upload_status: str
     media_type: str
+    # Short-lived presigned view URL for the private bucket. Never a
+    # credential; None when storage is unconfigured or nothing is uploaded.
+    view_url: str | None = None
 
 
 class ListingRead(BaseModel):
@@ -234,52 +251,41 @@ class PriceComponentItem(BaseModel):
 
 
 class PhotoInit(BaseModel):
+    """Owner-declared upload intent. The server generates the storage key;
+    the client never chooses it. MIME and size are re-verified against the
+    actual object at confirm time."""
+
     model_config = ConfigDict(extra="forbid")
 
-    media_type: Literal["PHOTO", "VIDEO"] = "PHOTO"
-    storage_key: str = Field(min_length=1, max_length=2000)
-    mime: str | None = Field(default=None, max_length=100)
+    content_type: Literal["image/jpeg", "image/png", "image/webp"]
+    size_bytes: int = Field(gt=0, le=MAX_PHOTO_BYTES)
     width: int | None = Field(default=None, gt=0)
     height: int | None = Field(default=None, gt=0)
     display_order: int = Field(default=0, ge=0)
     is_cover: bool = False
 
-    @field_validator("storage_key")
-    @classmethod
-    def _strip_storage_key(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("storage_key cannot be blank")
-        return v
 
-    @field_validator("mime")
-    @classmethod
-    def _strip_mime(cls, v: str | None) -> str | None:
-        return _strip_nonblank(v, "mime") if v is not None else v
+class PhotoInitResponse(PhotoRead):
+    """PENDING photo plus the short-lived direct-upload grant."""
+
+    upload_url: str
+    upload_expires_in: int
 
 
 class PhotoConfirm(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    storage_key: str = Field(min_length=1, max_length=2000)
-    mime: str | None = Field(default=None, max_length=100)
     width: int | None = Field(default=None, gt=0)
     height: int | None = Field(default=None, gt=0)
     display_order: int | None = Field(default=None, ge=0)
     is_cover: bool | None = None
 
-    @field_validator("storage_key")
-    @classmethod
-    def _strip_storage_key(cls, v: str) -> str:
-        v = v.strip()
-        if not v:
-            raise ValueError("storage_key cannot be blank")
-        return v
 
-    @field_validator("mime")
-    @classmethod
-    def _strip_mime(cls, v: str | None) -> str | None:
-        return _strip_nonblank(v, "mime") if v is not None else v
+class PhotoPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_order: int | None = Field(default=None, ge=0)
+    is_cover: bool | None = None
 
 
 def _listing_eager_options():
@@ -523,6 +529,7 @@ def create_listing(
 def list_owner_listings(
     user: User = Depends(require_role("OWNER")),
     db: Session = Depends(get_db),
+    storage: StorageService | None = Depends(get_storage_or_none),
     limit: int = Query(default=20, ge=1, le=50),
     offset: int = Query(default=0, ge=0),
     rental_unit_id: int | None = Query(default=None, gt=0),
@@ -541,7 +548,10 @@ def list_owner_listings(
         stmt = stmt.where(Listing.rental_unit_id == rental_unit_id)
     stmt = stmt.limit(limit).offset(offset)
     rows = list(db.execute(stmt).scalars().all())
-    return [_sort_nested(row) for row in rows]
+    nested = [_sort_nested(row) for row in rows]
+    for row in nested:
+        _attach_view_urls(row.photos, storage)
+    return nested
 
 
 @router.get("/{listing_id}", response_model=ListingRead)
@@ -549,8 +559,11 @@ def get_owner_listing(
     listing_id: int,
     user: User = Depends(require_role("OWNER")),
     db: Session = Depends(get_db),
+    storage: StorageService | None = Depends(get_storage_or_none),
 ):
-    return _sort_nested(_owned_listing_or_404(db, listing_id, user.id))
+    listing = _sort_nested(_owned_listing_or_404(db, listing_id, user.id))
+    _attach_view_urls(listing.photos, storage)
+    return listing
 
 
 @router.patch("/{listing_id}", response_model=ListingRead)
@@ -675,9 +688,27 @@ def replace_price_components(
     return list(db.execute(stmt).scalars().all())
 
 
+def _attach_view_urls(
+    photos: list[ListingPhoto], storage: StorageService | None
+) -> None:
+    """Stamp transient presigned view URLs for READY photos. No-op without
+    storage; Pydantic defaults view_url to None in that case."""
+    if storage is None:
+        return
+    for photo in photos:
+        if photo.upload_status != "READY":
+            continue
+        try:
+            photo.view_url = storage.presign_view(
+                photo.storage_key, B2_VIEW_EXPIRES_IN
+            )
+        except Exception:
+            photo.view_url = None
+
+
 @router.post(
     "/{listing_id}/photos:init",
-    response_model=PhotoRead,
+    response_model=PhotoInitResponse,
     status_code=status.HTTP_201_CREATED,
 )
 def init_listing_photo(
@@ -685,12 +716,9 @@ def init_listing_photo(
     payload: PhotoInit,
     user: User = Depends(require_role("OWNER")),
     db: Session = Depends(get_db),
+    storage: StorageService = Depends(require_storage),
 ):
     listing = _owned_listing_or_404(db, listing_id, user.id)
-    provided = payload.model_dump(exclude_unset=True)
-    provided.setdefault("media_type", "PHOTO")
-    provided.setdefault("display_order", 0)
-    provided.setdefault("is_cover", False)
     total_photos = (
         db.execute(
             select(ListingPhoto.id).where(
@@ -700,63 +728,67 @@ def init_listing_photo(
         .scalars()
         .all()
     )
-    if len(total_photos) >= 15:
+    if len(total_photos) >= MAX_PHOTOS_PER_LISTING:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="maximum 15 photos per listing",
         )
-    existing = (
-        db.execute(
-            select(ListingPhoto).where(
-                ListingPhoto.storage_key == provided["storage_key"]
-            )
-        )
-        .scalars()
-        .first()
-    )
-    if existing is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="storage_key already exists",
-        )
+    extension = ALLOWED_PHOTO_MIME[payload.content_type]
     photo = ListingPhoto(
         listing_id=listing.id,
+        # Temporary unique key; replaced with the final server-generated
+        # key once the row id is known. Never client-supplied.
+        storage_key=f"pending/{listing.id}/{os.urandom(8).hex()}",
+        mime=payload.content_type,
+        size_bytes=None,
+        width=payload.width,
+        height=payload.height,
+        display_order=payload.display_order,
+        is_cover=payload.is_cover,
+        media_type="PHOTO",
         upload_status="PENDING",
-        **provided,
     )
     db.add(photo)
     try:
+        db.flush()
+        photo.storage_key = photo_object_key(
+            listing.id, photo.id, extension
+        )
         db.commit()
-    except IntegrityError as exc:
+    except IntegrityError:
         db.rollback()
-        msg = str(exc.orig) if exc.orig is not None else str(exc)
-        if "storage_key" in msg or "unique" in msg.lower():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="storage_key already exists",
-            )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="photo data violates database constraints",
         )
     db.refresh(photo)
-    return photo
+    upload_url = storage.presign_upload(
+        photo.storage_key, payload.content_type, B2_UPLOAD_EXPIRES_IN
+    )
+    return PhotoInitResponse(
+        **PhotoRead.model_validate(photo).model_dump(),
+        upload_url=upload_url,
+        upload_expires_in=B2_UPLOAD_EXPIRES_IN,
+    )
 
 
-@router.post("/{listing_id}/photos:confirm", response_model=PhotoRead)
+@router.post(
+    "/{listing_id}/photos/{photo_id}/confirm", response_model=PhotoRead
+)
 def confirm_listing_photo(
     listing_id: int,
+    photo_id: int,
     payload: PhotoConfirm,
     user: User = Depends(require_role("OWNER")),
     db: Session = Depends(get_db),
+    storage: StorageService = Depends(require_storage),
 ):
     listing = _owned_listing_or_404(db, listing_id, user.id)
-    provided = payload.model_dump(exclude_unset=True)
     photo = (
         db.execute(
             select(ListingPhoto).where(
+                ListingPhoto.id == photo_id,
                 ListingPhoto.listing_id == listing.id,
-                ListingPhoto.storage_key == provided["storage_key"],
             )
         )
         .scalars()
@@ -772,9 +804,35 @@ def confirm_listing_photo(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="only PENDING photos can be confirmed",
         )
-    for field in ("mime", "width", "height", "display_order", "is_cover"):
+    try:
+        stored = storage.object_exists(photo.storage_key)
+    except StorageError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="photo storage is unavailable — try again",
+        )
+    if stored is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="upload not found at the expected key — retry the upload",
+        )
+    if stored.size_bytes > MAX_PHOTO_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="uploaded object exceeds the 5 MB limit",
+        )
+    if stored.content_type is not None and stored.content_type != photo.mime:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="uploaded content type does not match the declared type",
+        )
+    provided = payload.model_dump(exclude_unset=True)
+    for field in ("width", "height", "display_order", "is_cover"):
         if field in provided and provided[field] is not None:
             setattr(photo, field, provided[field])
+    photo.size_bytes = stored.size_bytes
+    if stored.content_type:
+        photo.mime = stored.content_type
     photo.upload_status = "READY"
     try:
         db.commit()
@@ -785,6 +843,101 @@ def confirm_listing_photo(
             detail="photo data violates database constraints",
         )
     db.refresh(photo)
+    _attach_view_urls([photo], storage)
+    return photo
+
+
+@router.delete(
+    "/{listing_id}/photos/{photo_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_listing_photo(
+    listing_id: int,
+    photo_id: int,
+    user: User = Depends(require_role("OWNER")),
+    db: Session = Depends(get_db),
+    storage: StorageService | None = Depends(get_storage_or_none),
+):
+    listing = _owned_listing_or_404(db, listing_id, user.id)
+    photo = (
+        db.execute(
+            select(ListingPhoto).where(
+                ListingPhoto.id == photo_id,
+                ListingPhoto.listing_id == listing.id,
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if photo is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Photo not found",
+        )
+    if storage is not None:
+        # Fail closed: a storage failure keeps the row so the user can
+        # retry instead of silently leaking an orphaned object.
+        try:
+            storage.delete_object(photo.storage_key)
+        except StorageError:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="photo storage is unavailable — try again",
+            )
+    db.delete(photo)
+    _normalize_cover(listing)
+    db.commit()
+    return None
+
+
+@router.patch("/{listing_id}/photos/{photo_id}", response_model=PhotoRead)
+def patch_listing_photo(
+    listing_id: int,
+    photo_id: int,
+    payload: PhotoPatch,
+    user: User = Depends(require_role("OWNER")),
+    db: Session = Depends(get_db),
+    storage: StorageService | None = Depends(get_storage_or_none),
+):
+    listing = _owned_listing_or_404(db, listing_id, user.id)
+    photo = (
+        db.execute(
+            select(ListingPhoto).where(
+                ListingPhoto.id == photo_id,
+                ListingPhoto.listing_id == listing.id,
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if photo is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Photo not found",
+        )
+    provided = payload.model_dump(exclude_unset=True)
+    if provided.get("display_order") is not None:
+        photo.display_order = provided["display_order"]
+    if provided.get("is_cover") is True:
+        # In-Python (not bulk) so the session never holds stale flags that
+        # the normalize step below would misread.
+        for p in listing.photos:
+            p.is_cover = p.id == photo.id
+    elif provided.get("is_cover") is False:
+        photo.is_cover = False
+    # Single-cover invariant: unsetting the only cover promotes the
+    # lowest-order READY photo instead of leaving zero covers.
+    _normalize_cover(listing)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="photo data violates database constraints",
+        )
+    db.refresh(photo)
+    _attach_view_urls([photo], storage)
     return photo
 
 
@@ -841,6 +994,7 @@ def publish_listing(
     listing_id: int,
     user: User = Depends(require_role("OWNER")),
     db: Session = Depends(get_db),
+    storage: StorageService | None = Depends(get_storage_or_none),
 ):
     listing = _owned_listing_or_404(db, listing_id, user.id)
     if listing.status == "PUBLISHED":
@@ -864,7 +1018,9 @@ def publish_listing(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="listing data violates database constraints",
         )
-    return _sort_nested(_owned_listing_or_404(db, listing.id, user.id))
+    published = _sort_nested(_owned_listing_or_404(db, listing.id, user.id))
+    _attach_view_urls(published.photos, storage)
+    return published
 
 
 @router.post("/{listing_id}/pause", response_model=ListingRead)
@@ -872,6 +1028,7 @@ def pause_listing(
     listing_id: int,
     user: User = Depends(require_role("OWNER")),
     db: Session = Depends(get_db),
+    storage: StorageService | None = Depends(get_storage_or_none),
 ):
     listing = _owned_listing_or_404(db, listing_id, user.id)
     if listing.status != "PUBLISHED":
@@ -888,4 +1045,6 @@ def pause_listing(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="listing data violates database constraints",
         )
-    return _sort_nested(_owned_listing_or_404(db, listing.id, user.id))
+    paused = _sort_nested(_owned_listing_or_404(db, listing.id, user.id))
+    _attach_view_urls(paused.photos, storage)
+    return paused

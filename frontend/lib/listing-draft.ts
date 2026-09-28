@@ -215,9 +215,11 @@ export type ChapterId =
 
 /** Draft-local photo state. `src` is a downscaled data URL so the draft
  *  (including previews) survives refresh inside localStorage limits;
- *  session-only blob: URLs are dropped on load. `status` describes the
- *  local draft only — backend PENDING/READY comes later. */
-export type PhotoStatus = "local";
+ *  session-only blob: URLs are dropped on load. `status` tracks the real
+ *  upload lifecycle: local-only picks stay "local" until init -> PUT ->
+ *  confirm succeeds, at which point the photo is backend-READY. Only
+ *  "ready" photos (backend-confirmed) count toward publication. */
+export type PhotoStatus = "local" | "uploading" | "ready" | "failed";
 
 export interface PhotoDraft {
   id: string;
@@ -227,6 +229,17 @@ export interface PhotoDraft {
   status: PhotoStatus;
   cover: boolean;
   order: number;
+  /** Backend photo id once initialized (init), null while local-only. */
+  backendId: number | null;
+  /** Presigned view URL for READY photos (refreshed from backend). */
+  viewUrl: string | null;
+  /** Human-readable failure for status "failed". */
+  error: string | null;
+}
+
+/** Backend-confirmed photos only — the publish requirement counts these. */
+export function readyPhotoCount(photos: PhotoDraft[]): number {
+  return photos.filter((p) => p.status === "ready").length;
 }
 
 /* ------------------------------------------------------------------ */
@@ -712,9 +725,10 @@ export interface ReadinessItem {
   step: ChapterId;
 }
 
-/** Frontend readiness preview. NOT a backend publish gate: local photos
- *  are draft state, never backend READY records. */
+/** Frontend readiness preview. NOT a backend publish gate: only
+ *  backend-confirmed "ready" photos count here; local picks never do. */
 export function readiness(d: ListingDraft): ReadinessItem[] {
+  const readyPhotos = readyPhotoCount(d.photos);
   const localPhotos = d.photos.length;
   const rent = parseRupees(d.pricing.rent);
   const placeOk =
@@ -728,12 +742,14 @@ export function readiness(d: ListingDraft): ReadinessItem[] {
   return [
     {
       key: "photos",
-      ok: localPhotos >= 3,
+      ok: readyPhotos >= 3,
       label: "Photos",
       detail:
-        localPhotos >= 3
-          ? `${localPhotos} added (final check happens at publish)`
-          : `Add ${3 - localPhotos} more photo${localPhotos === 2 ? "" : "s"}`,
+        readyPhotos >= 3
+          ? `${readyPhotos} of 3 required photos ready`
+          : localPhotos > readyPhotos
+            ? `${readyPhotos} of 3 required photos ready — finish uploading the rest`
+            : `Add ${3 - readyPhotos} more photo${readyPhotos === 2 ? "" : "s"} and finish uploading`,
       step: "photos",
     },
     {
@@ -921,10 +937,22 @@ export function loadDrafts(uid: string): Record<string, ListingDraft> {
         // Session-only blob: URLs die on refresh — drop those tiles so
         // stale previews never pretend to be usable photos. Downscaled
         // data URLs persist, so order/cover/images survive refresh.
+        // In-flight uploads demote to retryable local picks; READY photos
+        // keep their backend ids (view URLs refresh from the backend).
         photos: Array.isArray((d as ListingDraft).photos)
           ? (d as ListingDraft).photos
               .filter((p) => p && typeof p === "object" && !(p.src ?? "").startsWith("blob:"))
-              .map((p, i) => ({ ...p, status: "local" as const, order: i }))
+              .map((p, i) => ({
+                ...p,
+                status: (p.status === "ready" ? "ready" : "local") as PhotoStatus,
+                order: i,
+                backendId:
+                  p.status === "ready" && typeof p.backendId === "number"
+                    ? p.backendId
+                    : null,
+                viewUrl: typeof p.viewUrl === "string" ? p.viewUrl : null,
+                error: null,
+              }))
           : [],
         pricing: {
           ...fresh.pricing,

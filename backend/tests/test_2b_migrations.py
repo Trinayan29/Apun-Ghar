@@ -51,7 +51,7 @@ EXPECTED_TABLES = {
         "display_order",
     ],
     "listing_photos": [
-        "id", "listing_id", "storage_key", "mime", "width", "height",
+        "id", "listing_id", "storage_key", "mime", "size_bytes", "width", "height",
         "display_order", "is_cover", "upload_status", "media_type",
     ],
 }
@@ -148,10 +148,10 @@ def _amenity_count(url: str) -> int:
         engine.dispose()
 
 
-def test_single_head_and_upgrade_reaches_0017(test_db_url):
-    assert _heads(test_db_url) == {"0017"}
+def test_single_head_and_upgrade_reaches_0018(test_db_url):
+    assert _heads(test_db_url) == {"0018"}
     upgrade_head(test_db_url)
-    assert _version(test_db_url) == ["0017"]
+    assert _version(test_db_url) == ["0018"]
 
 
 def test_all_tables_and_columns_exist_at_head(test_db_url):
@@ -184,7 +184,7 @@ def test_round_trip_downgrade_to_0006_and_upgrade(test_db_url):
     for table in EXPECTED_TABLES:
         assert table not in tables, f"table {table} should be gone at 0006"
     upgrade_head(test_db_url)
-    assert _version(test_db_url) == ["0017"]
+    assert _version(test_db_url) == ["0018"]
 
 
 def test_seed_script_idempotent(test_db_url):
