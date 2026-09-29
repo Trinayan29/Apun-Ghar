@@ -172,6 +172,48 @@ describe("nextSubmitProgress (edit-after-success invalidation)", () => {
       nextSubmitProgress(legacy, { pricing: { ...legacy.pricing, rent: "9000" } })
     ).toEqual({ price: false, availability: false });
   });
+
+  it("honors explicit submitProgress from send-result persistence", () => {
+    // Regression: a successful Retry persisted {price:true, availability:true}
+    // but the stale stored flags overwrote them, so the card never cleared.
+    // The stored flags start false here — exactly the reported state.
+    const d = submitted();
+    d.submitProgress = { price: false, availability: false };
+    expect(
+      nextSubmitProgress(d, {
+        backendIds: { propertyId: 10, unitId: 20, listingId: 30 },
+        submitProgress: { price: true, availability: true },
+      })
+    ).toEqual({ price: true, availability: true });
+  });
+
+  it("honors partial explicit progress (price ok, availability failed)", () => {
+    const d = submitted();
+    d.submitProgress = { price: false, availability: false };
+    expect(
+      nextSubmitProgress(d, {
+        backendIds: { propertyId: 10, unitId: 20, listingId: 30 },
+        submitProgress: { price: true, availability: false },
+      })
+    ).toEqual({ price: true, availability: false });
+  });
+
+  it("still invalidates content edits alongside explicit progress", () => {
+    const d = submitted();
+    d.submitProgress = { price: true, availability: true };
+    expect(
+      nextSubmitProgress(d, {
+        pricing: { ...d.pricing, rent: "9000" },
+        submitProgress: { price: true, availability: true },
+      })
+    ).toEqual({ price: false, availability: true });
+    expect(
+      nextSubmitProgress(d, {
+        availability: { ...d.availability, mode: "occupied" },
+        submitProgress: { price: true, availability: true },
+      })
+    ).toEqual({ price: true, availability: false });
+  });
 });
 
 describe("placeName draft field", () => {
@@ -512,5 +554,16 @@ describe("property switch invalidation", () => {
         backendIds: { propertyId: 42, unitId: null, listingId: null },
       })
     ).toEqual({ price: false, availability: false });
+  });
+
+  it("persisting the same propertyId keeps explicit progress", () => {
+    const d = emptyDraft("d");
+    d.backendIds = { propertyId: 10, unitId: 20, listingId: 30 };
+    expect(
+      nextSubmitProgress(d, {
+        backendIds: { propertyId: 10, unitId: 20, listingId: 30 },
+        submitProgress: { price: true, availability: false },
+      })
+    ).toEqual({ price: true, availability: false });
   });
 });

@@ -9,7 +9,11 @@ import {
   type StudioInput,
 } from "./studio-data";
 import { ApiError } from "./api";
-import { emptyDraft, type ListingDraft } from "./listing-draft";
+import {
+  emptyDraft,
+  nextSubmitProgress,
+  type ListingDraft,
+} from "./listing-draft";
 
 const NOW = new Date("2026-09-24T12:00:00Z").getTime();
 const DAY = 24 * 60 * 60 * 1000;
@@ -366,6 +370,50 @@ describe("sent-but-incomplete drafts", () => {
     });
   });
 
+  it("clears attention after a successful retry persists progress", () => {
+    // Exact reported scenario: ids recorded, both flags false ("2 more
+    // steps"), Retry succeeds on price + availability, persist runs through
+    // the same nextSubmitProgress the store uses, reload re-aggregates.
+    const d = draft("p1");
+    d.backendIds = { propertyId: 10, unitId: 20, listingId: 30 };
+    d.submitProgress = { price: false, availability: false };
+    const before = aggregateStudioData(input({ drafts: [d] }));
+    expect(before.attention).toHaveLength(1);
+    expect(before.attention[0].remainingSteps).toEqual([
+      "price",
+      "availability",
+    ]);
+    const stored = {
+      ...d,
+      submitProgress: nextSubmitProgress(d, {
+        backendIds: { propertyId: 10, unitId: 20, listingId: 30 },
+        submitProgress: { price: true, availability: true },
+      }),
+    };
+    const after = aggregateStudioData(input({ drafts: [stored] }));
+    expect(after.attention).toEqual([]);
+    expect(after.drafts[0].kind).toBe("pending");
+  });
+
+  it("keeps partial attention when only price persisted", () => {
+    const d = draft("p1");
+    d.backendIds = { propertyId: 10, unitId: 20, listingId: 30 };
+    d.submitProgress = { price: false, availability: false };
+    const stored = {
+      ...d,
+      submitProgress: nextSubmitProgress(d, {
+        backendIds: { propertyId: 10, unitId: 20, listingId: 30 },
+        submitProgress: { price: true, availability: false },
+      }),
+    };
+    const data = aggregateStudioData(input({ drafts: [stored] }));
+    expect(data.attention).toHaveLength(1);
+    expect(data.attention[0]).toMatchObject({
+      reason: "send-incomplete",
+      remainingSteps: ["availability"],
+    });
+  });
+
   it("keeps draft and backend listing side by side without merging", () => {
     const d = draft("p1");
     d.backendIds = { propertyId: 1, unitId: 10, listingId: 100 };
@@ -557,14 +605,13 @@ describe("authoritative lifecycle filter for linked drafts", () => {
     const data = aggregateStudioData(stockedInput("DRAFT"));
     expect(data.drafts).toHaveLength(1);
     expect(data.drafts[0].draftId).toBe("d1");
-    // Fully sent: existing attention behavior is preserved as-is (the
-    // separate remainingSteps work owns that surface); resumability is
-    // what this filter must not break.
+    // Fully sent: completed sends need no attention, but the draft stays
+    // resumable through Continue and still counts as in-progress work
+    // until the backend listing leaves DRAFT.
     expect(
-      data.attention.some(
-        (item) => item.draftId === "d1" && item.reason === "send-incomplete"
-      )
-    ).toBe(true);
+      data.attention.some((item) => item.draftId === "d1")
+    ).toBe(false);
+    expect(data.summary.pendingCount).toBe(1);
   });
 
   it("fails open for an unknown listing id", () => {

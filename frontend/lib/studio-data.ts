@@ -518,6 +518,10 @@ export function aggregateStudioData(input: StudioInput): StudioData {
   const attention: StudioAttention[] = [];
   const byRecency = [...pendingDrafts].sort((a, b) => a.updatedAt - b.updatedAt);
   for (const d of byRecency) {
+    // Only drafts with outstanding steps qualify: a fully-submitted draft
+    // (all ids + flags, empty remainingSteps) has nothing left to send and
+    // must not linger in attention after a successful Retry.
+    if (d.remainingSteps.length === 0) continue;
     attention.push({
       key: `send:${d.draftId}`,
       reason: "send-incomplete",

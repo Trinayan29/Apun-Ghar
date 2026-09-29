@@ -403,6 +403,12 @@ export function draftSliceEqual(a: unknown, b: unknown): boolean {
  * control needs its own reset logic: editing pricing clears only `price`,
  * editing availability clears only `availability`, and unrelated (or
  * value-identical) patches preserve both. Never invents completion.
+ *
+ * An explicit `submitProgress` in the patch (the send pipeline persisting
+ * authoritative results) takes precedence as the base: without this, a
+ * successful Retry would have its freshly-completed flags overwritten by
+ * the stale stored ones. Content edits in the same patch still invalidate
+ * their own flag.
  */
 export function nextSubmitProgress(
   existing: Pick<
@@ -416,10 +422,11 @@ export function nextSubmitProgress(
     >
   >
 ): SubmitProgress {
-  const current: SubmitProgress = existing.submitProgress ?? {
+  const stored: SubmitProgress = existing.submitProgress ?? {
     price: false,
     availability: false,
   };
+  const current: SubmitProgress = patch.submitProgress ?? stored;
   let progress = current;
   if (
     patch.pricing !== undefined &&
@@ -439,8 +446,9 @@ export function nextSubmitProgress(
       normalizeBackendId(existing.backendIds?.propertyId)
   ) {
     // Switching properties orphans any unit/listing submitted under the old
-    // one: force both id-tied steps to resubmit. Callers also clear the
-    // dependent unit/listing ids; this is the backstop.
+    // one: force both id-tied steps to resubmit. Takes precedence even over
+    // explicit progress (a changed property id invalidates it). Callers also
+    // clear the dependent unit/listing ids; this is the backstop.
     progress = { price: false, availability: false };
   }
   return progress;

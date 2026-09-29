@@ -80,8 +80,10 @@ export function ListingDraftStoreProvider({
       if (!existing) return prev;
       // Centralized staleness guard: pricing/availability edits invalidate
       // only their own submit-progress flag, so a later send resubmits the
-      // changed step instead of skipping it. Id/backend/progress patches
-      // (e.g. the send handler persisting results) never trigger this.
+      // changed step instead of skipping it. A patch that explicitly
+      // carries submitProgress (the send handler persisting authoritative
+      // results) takes precedence — content edits aside, it is stored
+      // verbatim instead of being overwritten by the stale flags.
       const submitProgress = nextSubmitProgress(existing, patch);
       return {
         ...prev,
