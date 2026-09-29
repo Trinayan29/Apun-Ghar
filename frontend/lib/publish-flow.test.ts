@@ -4,6 +4,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   publishListingFlow,
+  sendThenPublish,
   sweepPendingUploads,
   sweepTargetListingId,
 } from "./publish-flow";
@@ -149,23 +150,194 @@ describe("publishListingFlow", () => {
   });
 });
 
-describe("sweepTargetListingId (stale-store regression)", () => {
-  function sendableDraft() {
-    const d = emptyDraft("sweep-1");
-    d.space.kind = "single";
-    d.space.furnishing = "Fully furnished";
-    d.space.audience = "Anyone";
-    d.place.buildingType = "PG";
-    d.place.placeName = "Green View House";
-    d.place.address = "12 Test Road";
-    d.place.city = "Guwahati";
-    d.place.area = { id: 7, type: "area", name: "Beltola", city: "Guwahati" };
-    d.pricing.rent = "8000";
-    d.pricing.rentBasis = "person";
-    d.availability.mode = "now";
-    d.listing.title = "Sunny PG near campus";
-    return d;
+describe("sendThenPublish (Step-14 sequencing)", () => {
+  function recordingTransport() {
+    const calls: { path: string; body: unknown; method: string }[] = [];
+    const transport: Transport = async <T,>(
+      path: string,
+      body: unknown,
+      method: "POST" | "PUT" | "GET" | "PATCH"
+    ): Promise<T> => {
+      calls.push({ path, body, method });
+      if (path === "/api/v1/owner/properties") return { id: 10 } as T;
+      if (path.endsWith("/units")) return { id: 20 } as T;
+      if (path === "/api/v1/owner/listings") return { id: 30 } as T;
+      if (path.endsWith("/price-components")) return [] as T;
+      return {} as T;
+    };
+    return { calls, transport };
   }
+
+  function publishing(pair: { publish: unknown; reload: unknown }) {
+    return {
+      publish: pair.publish as (id: number) => Promise<OwnerListingItem>,
+      reload: pair.reload as (id: number) => Promise<OwnerListingItem>,
+    };
+  }
+
+  it("A: syncs everything (incl. RENT) then publishes exactly once", async () => {
+    const { calls, transport } = recordingTransport();
+    const swept: number[] = [];
+    const publish = vi.fn(async () => publishedRow);
+    const outcome = await sendThenPublish({
+      draft: sendableDraft(),
+      guard: createSubmitGuard(),
+      transport,
+      persist: () => {},
+      sweep: async (id) => {
+        swept.push(id);
+      },
+      ...publishing({ publish, reload: vi.fn(async () => publishedRow) }),
+    });
+    expect(outcome).toEqual({ ok: true, listing: publishedRow });
+    expect(calls.map((c) => c.path)).toEqual([
+      "/api/v1/owner/properties",
+      "/api/v1/owner/properties/10/units",
+      "/api/v1/owner/listings",
+      "/api/v1/owner/properties/10",
+      "/api/v1/owner/units/20",
+      "/api/v1/owner/listings/30",
+      "/api/v1/owner/listings/30/price-components",
+      "/api/v1/owner/listings/30/availability",
+    ]);
+    const price = calls.find((c) => c.path.endsWith("/price-components"));
+    expect(
+      (price?.body as Record<string, unknown>[]).some(
+        (r) => r["charge_type"] === "RENT"
+      )
+    ).toBe(true);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledWith(30);
+    expect(swept).toEqual([30]);
+  });
+
+  it("B: invalid draft never reaches publish", async () => {
+    const { calls, transport } = recordingTransport();
+    const publish = vi.fn();
+    const d = sendableDraft();
+    d.pricing.rent = "";
+    const outcome = await sendThenPublish({
+      draft: d,
+      guard: createSubmitGuard(),
+      transport,
+      persist: () => {},
+      ...publishing({ publish, reload: vi.fn() }),
+    });
+    expect(outcome).toMatchObject({ ok: false, stage: "send" });
+    if (outcome.ok || outcome.stage !== "send") return;
+    expect(outcome.blocker).toMatchObject({ step: "price" });
+    expect(calls).toHaveLength(0);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("C: sync failure stops before publish with the real error", async () => {
+    const transport: Transport = async <T,>(path: string): Promise<T> => {
+      if (path === "/api/v1/owner/properties") return { id: 10 } as T;
+      if (path.endsWith("/units")) return { id: 20 } as T;
+      if (path === "/api/v1/owner/listings") return { id: 30 } as T;
+      if (path === "/api/v1/owner/properties/10") {
+        throw Object.assign(new Error("property locked"), { status: 422 });
+      }
+      return {} as T;
+    };
+    const publish = vi.fn();
+    const outcome = await sendThenPublish({
+      draft: sendableDraft(),
+      guard: createSubmitGuard(),
+      transport,
+      persist: () => {},
+      ...publishing({ publish, reload: vi.fn() }),
+    });
+    expect(outcome).toMatchObject({ ok: false, stage: "send" });
+    if (outcome.ok || outcome.stage !== "send") return;
+    expect(outcome.error).toMatch(/property locked/);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("D: publish 422 after sync keeps DRAFT with the backend error", async () => {
+    const { transport } = recordingTransport();
+    const publish = vi.fn(async () => {
+      throw Object.assign(
+        new Error("at least one RENT price component is required for publication"),
+        { status: 422 }
+      );
+    });
+    const outcome = await sendThenPublish({
+      draft: sendableDraft(),
+      guard: createSubmitGuard(),
+      transport,
+      persist: () => {},
+      ...publishing({ publish, reload: vi.fn() }),
+    });
+    expect(outcome).toEqual({
+      ok: false,
+      stage: "publish",
+      error: "at least one RENT price component is required for publication",
+    });
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
+
+  it("E: success reloads authoritatively and preserves published state", async () => {
+    const { transport } = recordingTransport();
+    const reload = vi.fn(async () => publishedRow);
+    const outcome = await sendThenPublish({
+      draft: sendableDraft(),
+      guard: createSubmitGuard(),
+      transport,
+      persist: () => {},
+      ...publishing({ publish: vi.fn(async () => publishedRow), reload }),
+    });
+    expect(outcome).toEqual({ ok: true, listing: publishedRow });
+    expect(reload).toHaveBeenCalledWith(30);
+  });
+
+  it("F: already-sent draft syncs idempotently without duplicates", async () => {
+    const { calls, transport } = recordingTransport();
+    const d = sendableDraft();
+    d.backendIds = { propertyId: 10, unitId: 20, listingId: 30 };
+    d.submitProgress = { price: true, availability: true };
+    const publish = vi.fn(async () => publishedRow);
+    const outcome = await sendThenPublish({
+      draft: d,
+      guard: createSubmitGuard(),
+      transport,
+      persist: () => {},
+      ...publishing({
+        publish,
+        reload: vi.fn(async () => publishedRow),
+      }),
+    });
+    expect(outcome.ok).toBe(true);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledWith(30);
+    // No creates, no price/availability resubmits — only reconcile PATCHes
+    // (publish itself goes through the injected publish mock, asserted below).
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      "PATCH /api/v1/owner/properties/10",
+      "PATCH /api/v1/owner/units/20",
+      "PATCH /api/v1/owner/listings/30",
+    ]);
+  });
+});
+
+function sendableDraft() {
+  const d = emptyDraft("sweep-1");
+  d.space.kind = "single";
+  d.space.furnishing = "Fully furnished";
+  d.space.audience = "Anyone";
+  d.place.buildingType = "PG";
+  d.place.placeName = "Green View House";
+  d.place.address = "12 Test Road";
+  d.place.city = "Guwahati";
+  d.place.area = { id: 7, type: "area", name: "Beltola", city: "Guwahati" };
+  d.pricing.rent = "8000";
+  d.pricing.rentBasis = "person";
+  d.availability.mode = "now";
+  d.listing.title = "Sunny PG near campus";
+  return d;
+}
+
+describe("sweepTargetListingId (stale-store regression)", () => {
 
   it("uses the send result even when a store re-read is stale", async () => {
     // Models React batching: persist is queued, so a synchronous re-read

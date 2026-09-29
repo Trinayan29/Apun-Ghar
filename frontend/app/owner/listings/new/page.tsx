@@ -11,7 +11,7 @@ import {
   type OwnerPropertyItem,
 } from "@/lib/api";
 import {
-  publishListingFlow,
+  sendThenPublish,
   sweepPendingUploads,
   sweepTargetListingId,
 } from "@/lib/publish-flow";
@@ -338,22 +338,30 @@ function Wizard() {
     });
   }, [draft, updateDraft]);
 
-  // Real publish: DRAFT -> PUBLISHED through the existing endpoint. Guards
-  // live server-side; failure keeps DRAFT and surfaces the backend message.
+  // Real publish: full authoritative send first (so an early-draft
+  // listing always has synced price/availability before POST /publish),
+  // then publish with an authoritative reload. Guards live server-side;
+  // any failure keeps DRAFT and surfaces the real message.
   const handlePublish = useCallback(async () => {
     if (!draft || publishGuardRef.current) return;
-    const listingId = normalizeBackendId(draft.backendIds?.listingId);
-    if (listingId == null) {
-      setPublishError("Send to Apun-Ghar first — then publish.");
-      return;
-    }
     publishGuardRef.current = true;
     setPublishing(true);
     setPublishError(null);
     try {
-      const outcome = await publishListingFlow(listingId);
+      const outcome = await sendThenPublish({
+        draft,
+        guard: submitGuardRef.current as SubmitGuard,
+        persist: (ids, progress) =>
+          updateDraft(draft.id, { backendIds: ids, submitProgress: progress }),
+        sweep: (listingId) => uploadPendingPhotos(draft.id, listingId),
+      });
       if (!outcome.ok) {
-        setPublishError(outcome.error);
+        if (outcome.stage === "send" && outcome.blocker) {
+          setSubmitError(outcome.error);
+          goChapter(outcome.blocker.step);
+        } else {
+          setPublishError(outcome.error);
+        }
         return;
       }
       // Authoritative state wins; the local preview simulation stays out
@@ -363,7 +371,7 @@ function Wizard() {
       setPublishing(false);
       publishGuardRef.current = false;
     }
-  }, [draft]);
+  }, [draft, updateDraft, goChapter, uploadPendingPhotos]);
 
   // Authoritative lifecycle on the publish chapter: a backend PUBLISHED
   // listing shows PUBLISHED state even after reload — the session-only

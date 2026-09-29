@@ -16,8 +16,20 @@ import {
   uploadPhoto,
   type AcceptedMime,
 } from "./photo-upload";
-import { normalizeBackendId, type PhotoDraft } from "./listing-draft";
-import type { SubmitResult } from "./listing-submit-flow";
+import {
+  normalizeBackendId,
+  type BackendIds,
+  type ListingDraft,
+  type PhotoDraft,
+  type SubmitProgress,
+} from "./listing-draft";
+import {
+  runSubmitAction,
+  submitErrorMessage,
+  type SubmitBlocker,
+  type SubmitGuard,
+} from "./listing-submit-action";
+import type { SubmitResult, Transport } from "./listing-submit-flow";
 
 export interface SweepUpload {
   (
@@ -156,4 +168,77 @@ export async function publishListingFlow(
       error: err instanceof Error ? err.message : "Couldn't publish — try again.",
     };
   }
+}
+
+export type SendThenPublishOutcome =
+  | { ok: true; listing: OwnerListingItem }
+  | { ok: false; stage: "send"; error: string; blocker: SubmitBlocker | null }
+  | { ok: false; stage: "publish"; error: string };
+
+/**
+ * Step-14 publish the safe way: run the full authoritative send first
+ * (validation, create/sync, price, availability — reusing runSubmitAction),
+ * then an optional photo sweep, then POST /publish. Publish never runs on
+ * unsynced backend state: an early-draft listing with local-only rent
+ * would otherwise fail the RENT guard. Failures at any stage keep DRAFT
+ * and surface the real error; the listing is only published after a
+ * successful sync.
+ */
+export async function sendThenPublish(deps: {
+  draft: ListingDraft;
+  guard: SubmitGuard;
+  transport?: Transport;
+  persist: (ids: BackendIds, progress: SubmitProgress) => void;
+  sweep?: (listingId: number) => Promise<unknown>;
+  publish?: (id: number) => Promise<OwnerListingItem>;
+  reload?: (id: number) => Promise<OwnerListingItem>;
+}): Promise<SendThenPublishOutcome> {
+  const sent = await runSubmitAction({
+    draft: deps.draft,
+    guard: deps.guard,
+    transport: deps.transport,
+    persist: deps.persist,
+  });
+  if (sent.type === "busy") {
+    return {
+      ok: false,
+      stage: "send",
+      error: "Already saving — try again in a moment.",
+      blocker: null,
+    };
+  }
+  if (sent.type === "invalid") {
+    return {
+      ok: false,
+      stage: "send",
+      error: sent.blocker.message,
+      blocker: sent.blocker,
+    };
+  }
+  if (!sent.result.ok) {
+    return {
+      ok: false,
+      stage: "send",
+      error: submitErrorMessage(sent.result),
+      blocker: null,
+    };
+  }
+  const listingId = sweepTargetListingId(sent.result);
+  if (listingId == null) {
+    return {
+      ok: false,
+      stage: "send",
+      error: "Couldn't save the draft — try again.",
+      blocker: null,
+    };
+  }
+  if (deps.sweep) await deps.sweep(listingId);
+  const published = await publishListingFlow(listingId, {
+    publish: deps.publish,
+    reload: deps.reload,
+  });
+  if (!published.ok) {
+    return { ok: false, stage: "publish", error: published.error };
+  }
+  return { ok: true, listing: published.listing };
 }
