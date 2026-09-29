@@ -456,11 +456,28 @@ export function aggregateStudioData(input: StudioInput): StudioData {
   const allListings = properties.flatMap((p) =>
     p.units.flatMap((u) => (u.listing ? [{ listing: u.listing, unitId: u.id, propertyId: p.id }] : []))
   );
+  // Authoritative lifecycle filter: a local draft linked to a live backend
+  // listing (PUBLISHED/PAUSED) is not resumable work — the wizard only
+  // creates, it never edits live rows — so it is excluded before the
+  // resume/attention/count surfaces derive. Unknown or missing listings
+  // (including a failed listings fetch) fail open: drafts never vanish on
+  // transient backend trouble. LocalStorage is never touched here.
+  const lifecycleByListingId = new Map(
+    allListings.map((l) => [l.listing.id, l.listing.lifecycle] as const)
+  );
+  const isLiveLinked = (d: (typeof drafts)[number]): boolean => {
+    const id = d.backendIds.listingId;
+    if (id === null || input.listings === null) return false;
+    const lifecycle = lifecycleByListingId.get(id);
+    if (lifecycle === undefined) return false;
+    return lifecycle === "PUBLISHED" || lifecycle === "PAUSED";
+  };
+  const activeDrafts = drafts.filter((d) => !isLiveLinked(d));
   const published = allListings.filter((l) => l.listing.lifecycle === "PUBLISHED");
   const paused = allListings.filter((l) => l.listing.lifecycle === "PAUSED");
   const draftListings = allListings.filter((l) => l.listing.lifecycle === "DRAFT");
-  const pendingDrafts = drafts.filter((d) => d.kind === "pending");
-  const localDrafts = drafts.filter((d) => d.kind === "local");
+  const pendingDrafts = activeDrafts.filter((d) => d.kind === "pending");
+  const localDrafts = activeDrafts.filter((d) => d.kind === "local");
 
   const summary: StudioSummary = {
     propertyCount: properties.length,
@@ -534,7 +551,7 @@ export function aggregateStudioData(input: StudioInput): StudioData {
   return {
     summary,
     properties,
-    drafts,
+    drafts: activeDrafts,
     attention: attention.slice(0, MAX_ATTENTION),
     insights,
     errors: {

@@ -374,7 +374,9 @@ describe("sent-but-incomplete drafts", () => {
       input({
         properties: [prop(1)],
         unitsByProperty: { 1: [unit(10, 1)] },
-        listings: [listing(100, 10)],
+        // DRAFT lifecycle: PUBLISHED/PAUSED-linked drafts are filtered
+        // by the authoritative lifecycle rule, not merged here.
+        listings: [listing(100, 10, { status: "DRAFT" })],
         drafts: [d],
       })
     );
@@ -512,5 +514,131 @@ describe("loadStudioData fetch behavior", () => {
     );
     expect(result.status).toBe("auth-error");
     expect(result.inventoryError).toBe("Invalid Firebase ID token");
+  });
+});
+
+describe("authoritative lifecycle filter for linked drafts", () => {
+  /** Fully-sent draft linked to a backend listing (the post-publish shape). */
+  function linkedDraft(id: string, listingId: number): ListingDraft {
+    const d = draft(id);
+    d.backendIds = { propertyId: 1, unitId: 10, listingId };
+    d.submitProgress = { price: true, availability: true };
+    return d;
+  }
+
+  function stockedInput(status: string, listingId = 100) {
+    return input({
+      properties: [prop(1)],
+      unitsByProperty: { 1: [unit(10, 1)] },
+      listings: [listing(listingId, 10, { status })],
+      drafts: [linkedDraft("d1", listingId)],
+    });
+  }
+
+  it("excludes a PUBLISHED-linked draft from Continue", () => {
+    const data = aggregateStudioData(stockedInput("PUBLISHED"));
+    expect(data.drafts).toEqual([]);
+  });
+
+  it("excludes a PUBLISHED-linked draft from attention and counts", () => {
+    const data = aggregateStudioData(stockedInput("PUBLISHED"));
+    expect(data.attention).toEqual([]);
+    expect(data.summary.pendingCount).toBe(0);
+    expect(data.summary.publishedCount).toBe(1);
+  });
+
+  it("excludes a PAUSED-linked draft", () => {
+    const data = aggregateStudioData(stockedInput("PAUSED"));
+    expect(data.drafts).toEqual([]);
+    expect(data.attention).toEqual([]);
+  });
+
+  it("keeps a DRAFT-linked draft resumable", () => {
+    const data = aggregateStudioData(stockedInput("DRAFT"));
+    expect(data.drafts).toHaveLength(1);
+    expect(data.drafts[0].draftId).toBe("d1");
+    // Fully sent: existing attention behavior is preserved as-is (the
+    // separate remainingSteps work owns that surface); resumability is
+    // what this filter must not break.
+    expect(
+      data.attention.some(
+        (item) => item.draftId === "d1" && item.reason === "send-incomplete"
+      )
+    ).toBe(true);
+  });
+
+  it("fails open for an unknown listing id", () => {
+    // Draft links to 100, but only listing 200 exists: keep the draft.
+    const data = aggregateStudioData(
+      input({
+        properties: [prop(1)],
+        unitsByProperty: { 1: [unit(10, 1)] },
+        listings: [listing(200, 10, { status: "PUBLISHED" })],
+        drafts: [linkedDraft("d1", 100)],
+      })
+    );
+    expect(data.drafts).toHaveLength(1);
+    expect(data.drafts[0].draftId).toBe("d1");
+  });
+
+  it("fails open when listings could not be fetched", () => {
+    const data = aggregateStudioData(
+      input({
+        properties: [prop(1)],
+        unitsByProperty: { 1: [unit(10, 1)] },
+        listings: null,
+        drafts: [linkedDraft("d1", 100)],
+      })
+    );
+    expect(data.drafts).toHaveLength(1);
+  });
+
+  it("filters only PUBLISHED/PAUSED-linked drafts among many", () => {
+    const data = aggregateStudioData(
+      input({
+        properties: [prop(1)],
+        unitsByProperty: { 1: [unit(10, 1), unit(11, 1), unit(12, 1)] },
+        listings: [
+          listing(100, 10, { status: "PUBLISHED" }),
+          listing(101, 11, { status: "PAUSED" }),
+          listing(102, 12, { status: "DRAFT" }),
+        ],
+        drafts: [
+          linkedDraft("pub", 100),
+          linkedDraft("paused", 101),
+          linkedDraft("live", 102),
+          draft("local"),
+        ],
+      })
+    );
+    expect(data.drafts.map((d) => d.draftId).sort()).toEqual(["live", "local"]);
+  });
+
+  it("preserves remainingSteps attention for DRAFT-linked drafts", () => {
+    const d = linkedDraft("d1", 100);
+    d.submitProgress = { price: false, availability: true };
+    const data = aggregateStudioData(
+      input({
+        properties: [prop(1)],
+        unitsByProperty: { 1: [unit(10, 1)] },
+        listings: [listing(100, 10, { status: "DRAFT" })],
+        drafts: [d],
+      })
+    );
+    expect(data.drafts).toHaveLength(1);
+    expect(data.attention).toHaveLength(1);
+    expect(data.attention[0]).toMatchObject({
+      reason: "send-incomplete",
+      draftId: "d1",
+      remainingSteps: ["price"],
+    });
+  });
+
+  it("aggregates deterministically across reload-equivalent runs", () => {
+    const built = stockedInput("PUBLISHED");
+    const first = aggregateStudioData(built);
+    const second = aggregateStudioData(stockedInput("PUBLISHED"));
+    expect(second).toEqual(first);
+    expect(second.drafts).toEqual([]);
   });
 });
