@@ -403,6 +403,70 @@ export function editSessionKey(uid: string, listingId: number): string {
   return `owner-listing-edits:${uid}:${listingId}`;
 }
 
+/**
+ * Meaningful editable slices for dirty comparison. Volatile fields
+ * (timestamps, navigation, progress simulation, expiring view URLs,
+ * transient upload errors) never count as edits.
+ */
+function comparableDraft(draft: ListingDraft): unknown {
+  return {
+    backendIds: draft.backendIds,
+    propertySource: draft.propertySource,
+    space: draft.space,
+    place: draft.place,
+    photos: draft.photos.map((p) => ({ ...p, viewUrl: null, error: null })),
+    pricing: draft.pricing,
+    availability: draft.availability,
+    listing: draft.listing,
+  };
+}
+
+/**
+ * True when the working draft differs from its saved snapshot in any
+ * meaningful slice. Reverting a field restores clean automatically —
+ * dirtiness is derived, never a stored flag.
+ */
+export function editSessionDirty(session: EditSession): boolean {
+  return (
+    JSON.stringify(comparableDraft(session.draft)) !==
+    JSON.stringify(comparableDraft(session.savedSnapshot))
+  );
+}
+
+export interface ReconciledSession {
+  session: EditSession;
+  /** True when local edits were kept over a newer server state. */
+  serverNewer: boolean;
+}
+
+/**
+ * Pure refresh reconciliation (no I/O): no stored session → adopt the
+ * fresh server state; stored-but-clean session → adopt the fresh server
+ * state; stored-and-dirty session → keep local edits and flag that the
+ * server has newer data (caller surfaces the banner; nothing merges).
+ */
+export function reconcileEditSession(
+  stored: EditSession | null,
+  fresh: ListingDraft
+): ReconciledSession {
+  if (stored === null || !editSessionDirty(stored)) {
+    const adopted: EditSession = {
+      draft: fresh,
+      savedSnapshot: fresh,
+      updatedAt: Date.now(),
+    };
+    return { session: adopted, serverNewer: false };
+  }
+  // Dirty locals are kept — but "server has newer data" is only true when
+  // the fresh server state actually diverges from the saved snapshot. A
+  // reload with an unchanged backend must not cry wolf (and must never
+  // talk the owner into discarding real edits).
+  const serverChanged =
+    JSON.stringify(comparableDraft(fresh)) !==
+    JSON.stringify(comparableDraft(stored.savedSnapshot));
+  return { session: stored, serverNewer: serverChanged };
+}
+
 export interface EditSession {
   draft: ListingDraft;
   savedSnapshot: ListingDraft;

@@ -5,13 +5,15 @@
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
+  editSessionDirty,
   editSessionKey,
   hydrateEditDraft,
   loadEditSession,
   loadEditSource,
+  reconcileEditSession,
   saveEditSession,
   EditLoadError,
-  type EditSourceData,
+  type EditSession,
 } from "./listing-edit";
 import { ApiError, type OwnerListingItem } from "./api";
 
@@ -130,6 +132,133 @@ describe("hydrateEditDraft pricing extras", () => {
       amount: "",
       frequency: "metered",
     });
+  });
+});
+
+describe("edit-session dirty tracking", () => {
+  function session() {
+    const d = hydrateEditDraft({
+      listing: listing() as unknown as OwnerListingItem,
+      unit: unit() as never,
+      property: property() as never,
+    });
+    return { draft: d, savedSnapshot: d, updatedAt: 1 };
+  }
+
+  it("is clean when nothing changed", () => {
+    expect(editSessionDirty(session())).toBe(false);
+  });
+
+  it("is dirty after an edit and clean again after revert", () => {
+    const s = session();
+    const edited = {
+      ...s,
+      draft: { ...s.draft, listing: { ...s.draft.listing, title: "New title" } },
+    };
+    expect(editSessionDirty(edited)).toBe(true);
+    expect(editSessionDirty({ ...edited, draft: s.draft })).toBe(false);
+  });
+
+  it("editing never mutates the saved snapshot", () => {
+    const s = session();
+    const originalTitle = s.savedSnapshot.listing.title;
+    const edited = {
+      ...s,
+      draft: { ...s.draft, listing: { ...s.draft.listing, title: "New title" } },
+    };
+    expect(editSessionDirty(edited)).toBe(true);
+    expect(s.savedSnapshot.listing.title).toBe(originalTitle);
+  });
+
+  it("ignores volatile fields (timestamps, view URLs, errors)", () => {
+    const s = session();
+    const touched = {
+      ...s,
+      draft: {
+        ...s.draft,
+        updatedAt: 999,
+        currentChapter: "price" as const,
+        photos: s.draft.photos.map((p) => ({
+          ...p,
+          viewUrl: "https://view/fresh",
+          error: "stale",
+        })),
+      },
+      updatedAt: 999,
+    };
+    expect(editSessionDirty(touched)).toBe(false);
+  });
+});
+
+describe("reconcileEditSession", () => {
+  function session() {
+    const d = hydrateEditDraft({
+      listing: listing() as unknown as OwnerListingItem,
+      unit: unit() as never,
+      property: property() as never,
+    });
+    return { draft: d, savedSnapshot: d, updatedAt: 1 };
+  }
+
+  function freshDraft() {
+    return hydrateEditDraft({
+      listing: listing() as unknown as OwnerListingItem,
+      unit: unit() as never,
+      property: property() as never,
+    });
+  }
+
+  it("adopts server state when nothing stored", () => {
+    const fresh = freshDraft();
+    const out = reconcileEditSession(null, fresh);
+    expect(out.serverNewer).toBe(false);
+    expect(out.session.draft).toBe(fresh);
+  });
+
+  it("adopts server state for a clean stored session", () => {
+    const fresh = freshDraft();
+    fresh.listing.title = "Server renamed";
+    const out = reconcileEditSession(session(), fresh);
+    expect(out.serverNewer).toBe(false);
+    expect(out.session.draft.listing.title).toBe("Server renamed");
+  });
+
+  it("keeps dirty local edits and flags server-newer", () => {
+    const s = session();
+    const dirty = {
+      ...s,
+      draft: { ...s.draft, listing: { ...s.draft.listing, title: "Mine" } },
+    };
+    const fresh = freshDraft();
+    fresh.listing.title = "Server renamed";
+    const out = reconcileEditSession(dirty, fresh);
+    expect(out.serverNewer).toBe(true);
+    expect(out.session.draft.listing.title).toBe("Mine");
+  });
+
+  it("dirty local edit + identical server means no server-newer banner", () => {
+    const s = session();
+    const dirty = {
+      ...s,
+      draft: { ...s.draft, listing: { ...s.draft.listing, title: "Mine" } },
+    };
+    // Fresh server state matches the saved snapshot exactly: the server
+    // did not change, so no banner even though local edits exist.
+    const out = reconcileEditSession(dirty, freshDraft());
+    expect(out.serverNewer).toBe(false);
+    expect(out.session.draft.listing.title).toBe("Mine");
+  });
+
+  it("dirty sessions persist through storage untouched", () => {
+    const s = session();
+    const dirty = {
+      ...s,
+      draft: { ...s.draft, listing: { ...s.draft.listing, title: "Mine" } },
+    };
+    saveEditSession("uid-1", 100, dirty);
+    const loaded = loadEditSession("uid-1", 100);
+    expect(loaded?.draft.listing.title).toBe("Mine");
+    expect(loaded && editSessionDirty(loaded)).toBe(true);
   });
 });
 
@@ -257,7 +386,7 @@ describe("loadEditSource", () => {
 });
 
 describe("hydrateEditDraft", () => {
-  function source(): EditSourceData {
+  function source() {
     return {
       listing: listing() as unknown as OwnerListingItem,
       unit: unit() as never,

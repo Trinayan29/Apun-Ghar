@@ -1,12 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { FormError } from "@/components/auth-ui";
 import { FormSection, WizardActions, WizardShell } from "@/components/ui/wizard";
 import {
+  editSessionDirty,
   loadEditSession,
   loadEditSource,
+  reconcileEditSession,
   saveEditSession,
   EditLoadError,
   hydrateEditDraft,
@@ -59,25 +67,46 @@ export function EditWizard({
   const [chapter, setChapter] = useState<ChapterId>("what");
   const [formError, setFormError] = useState<string | null>(null);
   const [fileStore] = useState(() => new Map<string, File>());
+  const [serverNewer, setServerNewer] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   const draft: ListingDraft | null = session?.draft ?? null;
+  const isDirty = session !== null && editSessionDirty(session);
+
+  // Latest session for the async load below (avoids a stale closure while
+  // keeping the effect dependency list stable).
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
+  // Armed only by an explicit Discard tap: the next load adopts the
+  // server state even though the stored session is dirty.
+  const discardArmedRef = useRef(false);
 
   // Authoritative load: a stored session renders instantly, then the
-  // backend re-hydration overwrites it (server wins; no merge in Phase 1).
+  // backend re-hydration reconciles. Clean sessions adopt the server
+  // state; dirty sessions keep local edits and raise the server-newer
+  // banner instead of silently overwriting. Nothing here ever writes to
+  // the backend — reconciliation is localStorage + state only.
   useEffect(() => {
     let cancelled = false;
-    if (session === null) setLoading(true);
+    if (sessionRef.current === null) setLoading(true);
     void loadEditSource(listingId)
       .then((source) => {
         if (cancelled) return;
         const fresh = hydrateEditDraft(source);
-        const next: EditSession = {
-          draft: fresh,
-          savedSnapshot: fresh,
-          updatedAt: Date.now(),
-        };
-        saveEditSession(uid, listingId, next);
-        setSession(next);
+        const reconciled = discardArmedRef.current
+          ? {
+              session: {
+                draft: fresh,
+                savedSnapshot: fresh,
+                updatedAt: Date.now(),
+              },
+              serverNewer: false,
+            }
+          : reconcileEditSession(sessionRef.current, fresh);
+        discardArmedRef.current = false;
+        saveEditSession(uid, listingId, reconciled.session);
+        setSession(reconciled.session);
+        setServerNewer(reconciled.serverNewer);
         setLoadError(null);
       })
       .catch((err: unknown) => {
@@ -94,12 +123,25 @@ export function EditWizard({
     return () => {
       cancelled = true;
     };
-    // Re-run only when the target listing (or owner) changes.
+    // Re-run when the target listing, owner, or an explicit discard asks
+    // for a fresh authoritative load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uid, listingId]);
+  }, [uid, listingId, reloadNonce]);
+
+  // Explicit discard: drop local edits and reload authoritative state.
+  // This is the only path that throws local edits away, and only on tap.
+  const discardEdits = useCallback(() => {
+    discardArmedRef.current = true;
+    setServerNewer(false);
+    setReloadNonce((n) => n + 1);
+  }, []);
 
   const patchDraft = useCallback(
     (patch: Partial<ListingDraft>) => {
+      // A fresh local edit cancels a pending armed discard: the owner has
+      // chosen to keep working, so a later reload must not wipe the draft.
+      // (Idempotent assignment; safe under StrictMode double-invocation.)
+      discardArmedRef.current = false;
       setSession((prev) => {
         if (!prev) return prev;
         const next: EditSession = {
@@ -113,6 +155,13 @@ export function EditWizard({
     },
     [uid, listingId]
   );
+
+  // Retry an authoritative reload without changing local edits. Used by
+  // the inline reload-error banner; unlike discard it never arms adoption.
+  const retryLoad = useCallback(() => {
+    setLoadError(null);
+    setReloadNonce((n) => n + 1);
+  }, []);
 
   const goChapter = useCallback(
     (next: ChapterId) => {
@@ -267,7 +316,10 @@ export function EditWizard({
       </main>
     );
   }
-  if (loadError || !draft) {
+  // Full-page error only when there is no usable draft at all. When a
+  // draft exists (e.g. a Discard refetch failed), the wizard keeps
+  // rendering and the error surfaces inline with a Retry action.
+  if (!draft) {
     return (
       <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col px-5 py-10">
         <FormError message={loadError ?? "Couldn't load this listing."} />
@@ -284,11 +336,58 @@ export function EditWizard({
     <WizardShell
       backHref="/owner/dashboard"
       title="Edit listing"
-      subtitle="Inspecting your saved listing"
+      subtitle={isDirty ? "Unsaved changes" : "Inspecting your saved listing"}
       chapters={CHAPTERS}
       current={chapter}
       onJump={goChapter}
     >
+      {loadError && (
+        <div
+          role="alert"
+          className="mb-4 rounded-2xl border border-line bg-red-50 px-4 py-3"
+        >
+          <p className="text-[14px] font-bold text-red-700">
+            Couldn&apos;t refresh from the server.
+          </p>
+          <p className="mt-1 text-[13.5px] text-muted">{loadError}</p>
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => retryLoad()}
+              className="flex min-h-[44px] w-full items-center justify-center rounded-xl bg-brand-600 px-4 text-[14px] font-bold text-white transition active:scale-[0.98]"
+            >
+              Retry reload
+            </button>
+          </div>
+        </div>
+      )}
+      {serverNewer && (
+        <div
+          role="alert"
+          className="mb-4 rounded-2xl border border-line bg-cream px-4 py-3"
+        >
+          <p className="text-[14px] font-bold">Server has newer data.</p>
+          <p className="mt-1 text-[13.5px] text-muted">
+            Your edits are kept. Reloading will discard them.
+          </p>
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              onClick={() => setServerNewer(false)}
+              className="flex min-h-[44px] flex-1 items-center justify-center rounded-xl border border-line bg-white text-[14px] font-bold transition active:scale-[0.98]"
+            >
+              Keep my edits
+            </button>
+            <button
+              type="button"
+              onClick={() => void discardEdits()}
+              className="flex min-h-[44px] flex-1 items-center justify-center rounded-xl bg-brand-600 px-4 text-[14px] font-bold text-white transition active:scale-[0.98]"
+            >
+              Discard &amp; reload
+            </button>
+          </div>
+        </div>
+      )}
       {content}
       <WizardActions
         onBack={(() => {
