@@ -239,6 +239,42 @@ describe("PhotosChapter uploads", () => {
   });
 });
 
+describe("PhotosChapter readOnly (edit mode)", () => {
+  function renderReadOnly(initial: PhotoDraft[]) {
+    const store = new Map<string, File>();
+    return render(
+      <PhotosChapter
+        photos={initial}
+        onPhotos={() => {}}
+        error={null}
+        listingId={42}
+        onEnsureListing={async () => ({ ok: true as const, listingId: 42 })}
+        photoOps={ops()}
+        fileStore={store}
+        readOnly
+      />
+    );
+  }
+
+  it("shows existing photos with no mutation controls", () => {
+    const { container } = renderReadOnly([
+      readyTile(0),
+      { ...readyTile(1), status: "failed", error: "boom", backendId: null, viewUrl: null },
+    ]);
+    // Display survives: images, Cover + Ready badges render.
+    expect(screen.getByText("Cover")).toBeDefined();
+    expect(screen.getByText("Ready ✓")).toBeDefined();
+    // Failed tiles show a static badge instead of a retry button.
+    expect(screen.getByText("Failed")).toBeDefined();
+    expect(
+      screen.queryByRole("button", { name: "Failed — retry" })
+    ).toBeNull();
+    // No add tile, no reorder/cover/remove buttons anywhere.
+    expect(container.querySelector('input[type="file"]')).toBeNull();
+    expect(container.querySelectorAll("button").length).toBe(0);
+  });
+});
+
 describe("mergeBackendPhotos", () => {
   it("refreshes view URLs for matching ready tiles", () => {
     const prev = [tile({ backendId: 5, status: "ready", viewUrl: null })];

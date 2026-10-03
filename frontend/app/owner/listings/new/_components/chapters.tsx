@@ -1070,6 +1070,7 @@ export function PhotosChapter({
   onEnsureListing,
   photoOps,
   fileStore,
+  readOnly = false,
 }: {
   photos: PhotoDraft[];
   onPhotos: (photos: PhotoDraft[]) => void;
@@ -1083,6 +1084,12 @@ export function PhotosChapter({
   photoOps?: PhotoBackendOps;
   /** Session-only original files, shared so send can finish uploads. */
   fileStore: Map<string, File>;
+  /**
+   * Read-only display: hides every control that uploads, retries,
+   * deletes, reorders, or re-covers photos. Used by Edit mode until
+   * photo editing ships; the refresh effect (GET only) still runs.
+   */
+  readOnly?: boolean;
 }) {
   const ops = photoOps ?? defaultPhotoOps;
   const [busy, setBusy] = useState(false);
@@ -1403,7 +1410,7 @@ export function PhotosChapter({
                 Ready ✓
               </span>
             )}
-            {p.status === "failed" && (
+            {p.status === "failed" && !readOnly && (
               <button
                 type="button"
                 onClick={() => void retryUpload(p.id)}
@@ -1412,6 +1419,12 @@ export function PhotosChapter({
                 Failed — retry
               </button>
             )}
+            {p.status === "failed" && readOnly && (
+              <span className="absolute right-2 top-2 rounded-full bg-red-600 px-2.5 py-1 text-[11px] font-bold text-white">
+                Failed
+              </span>
+            )}
+            {!readOnly && (
             <div className="flex items-center justify-between gap-1 p-1.5">
               <div className="flex gap-1">
                 <button type="button" onClick={() => movePhoto(p.id, -1)} aria-label={`Move photo ${i + 1} earlier`}
@@ -1438,15 +1451,16 @@ export function PhotosChapter({
                 )}
                 <button type="button" onClick={() => void removePhoto(p.id)} aria-label={`Remove photo ${i + 1}`}
                   className="flex h-10 w-10 items-center justify-center rounded-xl bg-cream text-muted transition active:scale-95">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" aria-hidden>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
                     <path d="m6 6 12 12M18 6 6 18" />
                   </svg>
                 </button>
               </div>
             </div>
+            )}
           </div>
         ))}
-        {ordered.length < 15 && (
+        {!readOnly && ordered.length < 15 && (
           <label
             className={`flex min-h-[190px] cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-line bg-white/60 transition active:scale-[0.99] ${
               busy ? "pointer-events-none opacity-60" : "text-muted"
@@ -1469,7 +1483,7 @@ export function PhotosChapter({
           </label>
         )}
       </div>
-      {ordered.length >= 15 && (
+      {!readOnly && ordered.length >= 15 && (
         <p role="alert" className="mt-3 rounded-xl bg-red-50 px-3.5 py-2.5 text-[13.5px] font-medium text-red-700">
           15 photos is the maximum — remove one to add another.
         </p>

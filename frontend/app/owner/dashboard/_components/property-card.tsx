@@ -51,11 +51,13 @@ export function PropertyCard({
   open,
   onToggle,
   onListingChanged,
+  onEditListing,
 }: {
   property: StudioProperty;
   open: boolean;
   onToggle: () => void;
   onListingChanged: () => void;
+  onEditListing?: (listingId: number) => void;
 }) {
   const location = locationLine(property);
   const typeLabel =
@@ -107,6 +109,7 @@ export function PropertyCard({
                 key={unit.id}
                 unit={unit}
                 onListingChanged={onListingChanged}
+                onEditListing={onEditListing}
               />
             ))}
           </div>

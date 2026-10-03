@@ -58,13 +58,17 @@ function rentLine(unit: StudioUnit): string | null {
 export function UnitRow({
   unit,
   onListingChanged,
+  onEditListing,
 }: {
   unit: StudioUnit;
   onListingChanged: () => void;
+  /** Opens the listing wizard in edit mode. Absent when there is no listing. */
+  onEditListing?: (listingId: number) => void;
 }) {
   const lifecycle = unit.listing
     ? (LIFECYCLE_LABELS[unit.listing.lifecycle] ?? unit.listing.lifecycle)
     : null;
+  const listingId = unit.listing?.id ?? null;
   return (
     <div className="py-3 first:pt-0 last:pb-0">
       <h2
@@ -88,12 +92,24 @@ export function UnitRow({
         {availabilityLine(unit)}
         {unit.listing ? ` · ${rentLine(unit)}` : ""}
       </p>
-      {unit.listing && (
-        <ListingLifecycleAction
-          listingId={unit.listing.id}
-          lifecycle={unit.listing.lifecycle}
-          onChanged={onListingChanged}
-        />
+      {unit.listing && listingId !== null && (
+        <div className="mt-2 flex gap-2">
+          {onEditListing && (
+            <button
+              type="button"
+              onClick={() => onEditListing(listingId)}
+              aria-label={`Edit ${unit.listing.title}`}
+              className="flex min-h-[48px] items-center justify-center rounded-xl border border-line bg-white px-4 text-[14px] font-bold transition active:scale-[0.98] sm:w-auto"
+            >
+              Edit
+            </button>
+          )}
+          <ListingLifecycleAction
+            listingId={unit.listing.id}
+            lifecycle={unit.listing.lifecycle}
+            onChanged={onListingChanged}
+          />
+        </div>
       )}
     </div>
   );

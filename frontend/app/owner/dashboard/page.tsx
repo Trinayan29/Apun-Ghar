@@ -300,6 +300,11 @@ function Dashboard() {
               <YourPlaces
                 properties={studio.properties}
                 onListingChanged={() => void loadStudio()}
+                onEditListing={(listingId) =>
+                  router.push(
+                    `/owner/listings/new?mode=edit&listingId=${listingId}`
+                  )
+                }
               />
             )}
             {studio !== null && isEmpty && (

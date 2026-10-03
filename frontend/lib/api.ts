@@ -215,6 +215,11 @@ export interface OwnerPriceItem {
   amount_paise: number | null;
   billing_frequency: string;
   calculation_basis: string;
+  /** Present on backend reads; absent from create payloads. */
+  label?: string | null;
+  rate_paise_per_unit?: number | null;
+  mandatory?: boolean | null;
+  included_in_advertised?: boolean | null;
 }
 
 export interface OwnerPhotoItem {
@@ -314,6 +319,16 @@ export interface OwnerListingItem {
 
 export const listOwnerProperties = (): Promise<OwnerPropertyItem[]> =>
   apiGet<OwnerPropertyItem[]>("/api/v1/owner/properties");
+
+/** Single property read (edit mode hydration). Ownership enforced server-side. */
+export const getOwnerProperty = (
+  propertyId: number
+): Promise<OwnerPropertyItem> =>
+  apiGet<OwnerPropertyItem>(`/api/v1/owner/properties/${propertyId}`);
+
+/** Single unit read (edit mode hydration). Ownership enforced server-side. */
+export const getOwnerUnit = (unitId: number): Promise<OwnerUnitItem> =>
+  apiGet<OwnerUnitItem>(`/api/v1/owner/units/${unitId}`);
 
 export const listPropertyUnits = (
   propertyId: number

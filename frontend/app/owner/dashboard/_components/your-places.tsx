@@ -13,9 +13,11 @@ import { PropertyCard } from "./property-card";
 export function YourPlaces({
   properties,
   onListingChanged,
+  onEditListing,
 }: {
   properties: StudioProperty[];
   onListingChanged: () => void;
+  onEditListing?: (listingId: number) => void;
 }) {
   const [openIds, setOpenIds] = useState<ReadonlySet<number> | null>(null);
   if (properties.length === 0) return null;
@@ -40,6 +42,7 @@ export function YourPlaces({
             open={open.has(property.id)}
             onToggle={() => toggle(property.id)}
             onListingChanged={onListingChanged}
+            onEditListing={onEditListing}
           />
         ))}
       </div>

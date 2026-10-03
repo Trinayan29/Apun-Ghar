@@ -50,6 +50,7 @@ import {
   validateWho,
   type ChapterId,
 } from "@/lib/listing-draft";
+import { EditWizard } from "./_components/edit-wizard";
 import {
   ChoosePropertyChapter,
   IncludedChapter,
@@ -143,9 +144,21 @@ function Wizard() {
   // The ref guard makes creation run exactly once: without it, the effect
   // re-fires when getDraft identity changes after createDraft but before
   // router.replace updates the URL, orphaning a second "Untitled" draft.
+  // Edit mode (?mode=edit&listingId=123) renders a separate wizard over
+  // backend data. The create bootstrap below is skipped entirely so edit
+  // mode can never create a local draft, let alone backend rows.
+  const editListingId = (() => {
+    if (params.get("mode") !== "edit") return null;
+    const raw = params.get("listingId");
+    const id = raw !== null ? Number(raw) : NaN;
+    return Number.isInteger(id) && id > 0 ? id : -1;
+  })();
+  const isEditMode = editListingId !== null;
+
   const bootstrappedRef = useRef<string | null>(null);
   useEffect(() => {
     if (!authChecked || !ready) return;
+    if (isEditMode) return;
     const requested = params.get("draft");
     if (requested && getDraft(requested)) {
       bootstrappedRef.current = requested;
@@ -161,7 +174,7 @@ function Wizard() {
     bootstrappedRef.current = id;
     setDraftId(id);
     router.replace(`/owner/listings/new?draft=${id}`);
-  }, [authChecked, ready, params, getDraft, createDraft, router]);
+  }, [authChecked, ready, params, getDraft, createDraft, router, isEditMode]);
 
   const draft = draftId ? getDraft(draftId) : null;
 
@@ -550,6 +563,23 @@ function Wizard() {
         <FormError message={authError} />
       </main>
     );
+  }
+  if (isEditMode) {
+    if (!authChecked || !firebaseUser) {
+      return (
+        <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col items-center justify-center px-5">
+          <p className="text-[14.5px] font-semibold text-muted">Loading your draft…</p>
+        </main>
+      );
+    }
+    if (editListingId === -1) {
+      return (
+        <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col px-5 py-10">
+          <FormError message="That edit link looks broken — please start again from your dashboard." />
+        </main>
+      );
+    }
+    return <EditWizard uid={firebaseUser.uid} listingId={editListingId as number} />;
   }
   if (!authChecked || !draft) {
     return (
