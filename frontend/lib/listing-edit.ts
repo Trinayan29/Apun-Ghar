@@ -331,8 +331,10 @@ function hydrateSpace(unit: OwnerUnitDetail): SpaceDraft {
           : unit.food_status === "NONE"
             ? "none"
             : "",
-    // OwnerPropertyItem carries no curfew fields: leave unset rather than
-    // inventing a value. Validation only requires gateTime when curfew is on.
+    // Curfew lives on the Property row: hydrateEditDraft maps has_curfew /
+    // gate_closing_time for PG/HOSTEL after hydration. The unit row
+    // carries no curfew of its own, so nothing is invented here.
+    // Validation only requires gateTime when curfew is on.
     pgCurfew: null,
     audience: audience as SpaceDraft["audience"],
     policies: {
@@ -365,6 +367,10 @@ function hydrateSpace(unit: OwnerUnitDetail): SpaceDraft {
  * edit draft in later phases); propertySource "existing" reuses the
  * locked-chapter display; furthestChapter unlocks every chapter so the
  * owner can inspect freely (Phase 1 performs no save).
+ *
+ * Curfew state hydrates for PG/HOSTEL only: has_curfew maps onto
+ * space.pgCurfew and gate_closing_time ("HH:MM:SS") onto place.gateTime
+ * ("HH:MM"). Other building types keep the unset representation.
  */
 export function hydrateEditDraft(source: EditSourceData): ListingDraft {
   const { listing, unit, property } = source;
@@ -377,6 +383,15 @@ export function hydrateEditDraft(source: EditSourceData): ListingDraft {
   draft.propertySource = "existing";
   draft.place = prefillPlaceFromProperty(property);
   draft.space = hydrateSpace(unit);
+  if (property.property_type === "PG" || property.property_type === "HOSTEL") {
+    if (property.has_curfew === true || property.has_curfew === false) {
+      draft.space.pgCurfew = property.has_curfew;
+    }
+    const gate = property.gate_closing_time;
+    if (typeof gate === "string" && /^\d{2}:\d{2}(:\d{2})?$/.test(gate)) {
+      draft.place.gateTime = gate.slice(0, 5);
+    }
+  }
   draft.pricing = hydratePricing(listing.price_components);
   draft.availability = hydrateAvailability(listing);
   draft.listing = {

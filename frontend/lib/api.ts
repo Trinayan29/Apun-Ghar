@@ -201,6 +201,10 @@ export interface OwnerPropertyItem {
     name: string;
     city: string;
   } | null;
+  /** Whether the property enforces a curfew (PG/hostel). Always present on backend reads. */
+  has_curfew?: boolean | null;
+  /** Gate-closing time as "HH:MM:SS" (backend time serialization). Null when no curfew. */
+  gate_closing_time?: string | null;
 }
 
 export interface OwnerUnitItem {
