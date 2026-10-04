@@ -21,6 +21,10 @@ import {
   type EditSession,
 } from "@/lib/listing-edit";
 import {
+  countChanges,
+  diffListingChanges,
+} from "@/lib/listing-changes";
+import {
   CHAPTERS,
   nextChapter,
   prevChapter,
@@ -42,6 +46,7 @@ import {
   WhereChapter,
   WhoChapter,
 } from "./chapters";
+import { ReviewChanges } from "./review-changes";
 
 /**
  * Edit Listing, Phase 1: load + inspect only.
@@ -69,9 +74,21 @@ export function EditWizard({
   const [fileStore] = useState(() => new Map<string, File>());
   const [serverNewer, setServerNewer] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
+  // P2.2 review overlay: local view state only. Opening/closing never
+  // touches the backend or storage; the P2.1 session stays authoritative.
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   const draft: ListingDraft | null = session?.draft ?? null;
   const isDirty = session !== null && editSessionDirty(session);
+  // savedSnapshot-vs-draft diff for the review screen. Recomputed from
+  // the live session, so discard/retry while reviewing updates it (a
+  // session that went clean shows the review empty state, never stale).
+  const changeGroups = useMemo(
+    () =>
+      session ? diffListingChanges(session.savedSnapshot, session.draft) : [],
+    [session]
+  );
+  const changeCount = countChanges(changeGroups);
 
   // Latest session for the async load below (avoids a stale closure while
   // keeping the effect dependency list stable).
@@ -161,6 +178,23 @@ export function EditWizard({
   const retryLoad = useCallback(() => {
     setLoadError(null);
     setReloadNonce((n) => n + 1);
+  }, []);
+
+  // P2.2 review entry: opens only for dirty sessions (a clean session
+  // must never reach an empty review screen). Pure view-state flip —
+  // no backend, no storage writes.
+  const openReview = useCallback(() => {
+    if (session !== null && editSessionDirty(session)) {
+      setReviewOpen(true);
+      window.scrollTo({ top: 0 });
+    }
+  }, [session]);
+
+  // Back to editing: returns to the current chapter with the session
+  // intact. Never discards, reloads, or calls the backend.
+  const closeReview = useCallback(() => {
+    setReviewOpen(false);
+    window.scrollTo({ top: 0 });
   }, []);
 
   const goChapter = useCallback(
@@ -388,15 +422,43 @@ export function EditWizard({
           </div>
         </div>
       )}
-      {content}
-      <WizardActions
-        onBack={(() => {
-          const prev = prevChapter(chapter);
-          return prev ? () => goChapter(prev) : undefined;
-        })()}
-        onContinue={goNext}
-        continueLabel="Continue"
-      />
+      {reviewOpen ? (
+        <ReviewChanges groups={changeGroups} onBack={closeReview} />
+      ) : (
+        <>
+          {content}
+          {isDirty && (
+            <div className="mt-6 rounded-2xl border border-line bg-white px-4 py-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-[14.5px] font-bold">Unsaved changes</p>
+                  <p className="mt-0.5 text-[13px] text-muted">
+                    {changeCount === 1
+                      ? "1 change since the saved version."
+                      : `${changeCount} changes since the saved version.`}{" "}
+                    Nothing is sent anywhere yet.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={openReview}
+                  className="flex min-h-[48px] items-center justify-center rounded-xl bg-ink px-6 text-[14.5px] font-bold text-white transition active:scale-[0.98]"
+                >
+                  Review Changes
+                </button>
+              </div>
+            </div>
+          )}
+          <WizardActions
+            onBack={(() => {
+              const prev = prevChapter(chapter);
+              return prev ? () => goChapter(prev) : undefined;
+            })()}
+            onContinue={goNext}
+            continueLabel="Continue"
+          />
+        </>
+      )}
     </WizardShell>
   );
 }
