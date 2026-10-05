@@ -18,6 +18,11 @@ import {
   saveEditSession,
 } from "@/lib/listing-edit";
 import { ReviewChanges } from "./review-changes";
+import {
+  SaveFailurePanel,
+  SaveProgressPanel,
+  SaveSuccessPanel,
+} from "./review-changes";
 
 vi.mock("@/lib/listing-edit", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/listing-edit")>();
@@ -157,8 +162,7 @@ describe("ReviewChanges empty state", () => {
   });
 });
 
-describe("Review Changes network behavior", () => {
-  it("entering/exiting review performs no POST/PATCH/PUT/DELETE", async () => {
+describe("Review Changes network behavior", () => {  it("entering/exiting review performs no POST/PATCH/PUT/DELETE", async () => {
     const methods: (string | undefined)[] = [];
     vi.stubGlobal(
       "fetch",
@@ -181,5 +185,168 @@ describe("Review Changes network behavior", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("Review Changes save entry", () => {
+  it("offers Save Changes without confirmation for ordinary edits", async () => {
+    seedSession({ dirty: true });
+    const onSave = vi.fn();
+    render(<EditWizard uid="test-uid" listingId={100} />);
+    fireEvent.click(await screen.findByText("Review Changes"));
+    await screen.findByText("Review your changes");
+    // This seed dirties title + rent: significant, so confirmation shows.
+    expect(
+      screen.getByText(/I understand this changes the rent/)
+    ).toBeDefined();
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("Save button stays disabled until commercial changes are confirmed", () => {
+    const onSave = vi.fn();
+    render(
+      <ReviewChanges
+        groups={[]}
+        onBack={() => {}}
+        save={{ significant: true, onSave }}
+      />
+    );
+    // Empty diff: no save affordance at all.
+    expect(screen.queryByText("Save Changes")).toBeNull();
+  });
+});
+
+describe("SaveActionRow behavior", () => {
+  it("non-significant review saves immediately without a checkbox", async () => {
+    seedSession({ dirty: false });
+    const onSave = vi.fn();
+    // Title-only diff: significant flag comes from the groups passed in.
+    const { diffListingChanges } = await import("@/lib/listing-changes");
+    const { hydrateEditDraft } = await import("@/lib/listing-edit");
+    const s = source();
+    const snapshot = hydrateEditDraft({
+      listing: s.listing,
+      unit: s.unit,
+      property: s.property,
+    } as never);
+    const draft = {
+      ...snapshot,
+      listing: { ...snapshot.listing, title: "Only a title edit" },
+    };
+    const groups = diffListingChanges(snapshot, draft);
+    expect(groups.flatMap((g) => g.changes).every((c) => !c.significant)).toBe(
+      true
+    );
+    render(<ReviewChanges groups={groups} onBack={() => {}} save={{ significant: false, onSave }} />);
+    const button = screen.getByText("Save Changes");
+    expect(
+      screen.queryByText(/I understand this changes the rent/)
+    ).toBeNull();
+    fireEvent.click(button);
+    expect(onSave).toHaveBeenCalledWith(false);
+  });
+
+  it("significant review requires the checkbox before saving", async () => {
+    seedSession({ dirty: false });
+    const onSave = vi.fn();
+    const { diffListingChanges } = await import("@/lib/listing-changes");
+    const { hydrateEditDraft } = await import("@/lib/listing-edit");
+    const s = source();
+    const snapshot = hydrateEditDraft({
+      listing: s.listing,
+      unit: s.unit,
+      property: s.property,
+    } as never);
+    const draft = {
+      ...snapshot,
+      pricing: { ...snapshot.pricing, rent: "10000" },
+    };
+    const groups = diffListingChanges(snapshot, draft);
+    render(<ReviewChanges groups={groups} onBack={() => {}} save={{ significant: true, onSave }} />);
+    const button = screen.getByText("Save Changes") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.click(
+      screen.getByLabelText(/I understand this changes the rent/)
+    );
+    expect((screen.getByText("Save Changes") as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(screen.getByText("Save Changes"));
+    expect(onSave).toHaveBeenCalledWith(true);
+  });
+});
+
+describe("Save panels", () => {
+  it("progress shows done, current, and pending steps", () => {
+    render(<SaveProgressPanel done={["property", "unit"]} current="listing" />);
+    expect(screen.getByText("Saving changes")).toBeDefined();
+    expect(screen.getByText("Property")).toBeDefined();
+    expect(screen.getByText("Availability")).toBeDefined();
+  });
+
+  it("failure names the step, lists applied/pending, and retries", () => {
+    const onRetry = vi.fn();
+    const onRetryReload = vi.fn();
+    const onBack = vi.fn();
+    render(
+      <SaveFailurePanel
+        failure={{
+          ok: false,
+          reason: "step-failed",
+          failedStep: "listing",
+          appliedSteps: ["property", "unit"],
+          pendingSteps: ["price", "availability"],
+          error: "Couldn't save Listing: bad title",
+          status: 422,
+        }}
+        onRetry={onRetry}
+        onRetryReload={onRetryReload}
+        onBack={onBack}
+      />
+    );
+    expect(screen.getByText("Couldn't save your changes")).toBeDefined();
+    expect(screen.getByText(/Already saved: Property, Space/)).toBeDefined();
+    expect(screen.getByText(/Not attempted: Pricing, Availability/)).toBeDefined();
+    fireEvent.click(screen.getByText("Retry from Listing"));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByText("Back to editing"));
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("reload failure offers confirmation retry instead of mutation retry", () => {
+    const onRetry = vi.fn();
+    const onRetryReload = vi.fn();
+    render(
+      <SaveFailurePanel
+        failure={{
+          ok: false,
+          reason: "reload-failed",
+          appliedSteps: ["listing"],
+          pendingSteps: [],
+          needsReloadOnly: true,
+          error: "Your changes were saved, but we couldn't confirm.",
+        }}
+        onRetry={onRetry}
+        onRetryReload={onRetryReload}
+        onBack={() => {}}
+      />
+    );
+    expect(screen.getByText("Saved, but couldn't confirm")).toBeDefined();
+    expect(screen.queryByText(/Retry from/)).toBeNull();
+    fireEvent.click(screen.getByText("Retry confirmation"));
+    expect(onRetryReload).toHaveBeenCalledTimes(1);
+    expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it("success ends at the Studio, or editing when stale", () => {
+    const { unmount } = render(
+      <SaveSuccessPanel stale={false} onBackEditing={() => {}} />
+    );
+    expect(screen.getByText("Changes saved")).toBeDefined();
+    expect(screen.getByRole("link", { name: "Back to Studio" })).toBeDefined();
+    unmount();
+    const onBackEditing = vi.fn();
+    render(<SaveSuccessPanel stale={true} onBackEditing={onBackEditing} />);
+    expect(screen.getByText("Saved — with newer edits kept")).toBeDefined();
+    fireEvent.click(screen.getByText("Back to editing"));
+    expect(onBackEditing).toHaveBeenCalledTimes(1);
   });
 });

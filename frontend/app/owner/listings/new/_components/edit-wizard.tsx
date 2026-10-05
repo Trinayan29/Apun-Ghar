@@ -23,15 +23,24 @@ import {
 import {
   countChanges,
   diffListingChanges,
+  hasSignificantChanges,
 } from "@/lib/listing-changes";
+import {
+  confirmEditSaveReload,
+  runEditSave,
+  type EditSaveFailure,
+  type EditSaveStep,
+} from "@/lib/listing-edit-save";
 import {
   CHAPTERS,
   nextChapter,
+  normalizeBackendId,
   prevChapter,
   suggestTitle,
   type ChapterId,
   type ListingDraft,
 } from "@/lib/listing-draft";
+import { createSubmitGuard, type SubmitGuard } from "@/lib/listing-submit-action";
 import {
   IncludedChapter,
   KindChapter,
@@ -46,17 +55,29 @@ import {
   WhereChapter,
   WhoChapter,
 } from "./chapters";
-import { ReviewChanges } from "./review-changes";
+import { ReviewChanges, SaveFailurePanel, SaveProgressPanel, SaveSuccessPanel } from "./review-changes";
 
 /**
- * Edit Listing, Phase 1: load + inspect only.
+ * Edit Listing: load + inspect + save.
  *
- * Renders the existing wizard chapters over a hydrated backend listing.
- * NOTHING here mutates the backend: there is no send, no publish, no
- * photo upload wiring beyond the chapter's own listing-id path (which
- * only runs on explicit user action, same as create mode). The property
- * step is locked — reassignment is not supported.
+ * Reads stay GET-only (loader, refresh, retry). The only mutations are
+ * the explicit P2.3c save flow from Review Changes: sequential
+ * Property/Unit/Listing/Pricing/Availability writes through
+ * runEditSave, then exactly one authoritative reload that becomes the
+ * new snapshot. The property step stays locked — reassignment is not
+ * supported.
  */
+export type SaveUiState =
+  | { phase: "idle" }
+  | {
+      phase: "saving";
+      planned: EditSaveStep[];
+      done: EditSaveStep[];
+      current: EditSaveStep | null;
+    }
+  | { phase: "failed"; failure: EditSaveFailure }
+  | { phase: "saved"; stale: boolean };
+
 export function EditWizard({
   uid,
   listingId,
@@ -77,6 +98,10 @@ export function EditWizard({
   // P2.2 review overlay: local view state only. Opening/closing never
   // touches the backend or storage; the P2.1 session stays authoritative.
   const [reviewOpen, setReviewOpen] = useState(false);
+  // P2.3c save machine: idle -> saving -> failed/saved. The session
+  // itself is only replaced on adopted success; every other outcome
+  // leaves draft/snapshot exactly as they were.
+  const [saveUi, setSaveUi] = useState<SaveUiState>({ phase: "idle" });
 
   const draft: ListingDraft | null = session?.draft ?? null;
   const isDirty = session !== null && editSessionDirty(session);
@@ -97,6 +122,12 @@ export function EditWizard({
   // Armed only by an explicit Discard tap: the next load adopts the
   // server state even though the stored session is dirty.
   const discardArmedRef = useRef(false);
+  // Single-flight save guard (one orchestrator at a time per wizard).
+  const saveGuardRef = useRef<SubmitGuard | null>(null);
+  // True while a save flight is running: discard/retry stay parked so a
+  // background reload can never adopt over the in-flight save. The
+  // generation check remains authoritative regardless.
+  const saveActiveRef = useRef(false);
 
   // Authoritative load: a stored session renders instantly, then the
   // backend re-hydration reconciles. Clean sessions adopt the server
@@ -147,7 +178,10 @@ export function EditWizard({
 
   // Explicit discard: drop local edits and reload authoritative state.
   // This is the only path that throws local edits away, and only on tap.
+  // Parked while a save flight runs (the generation guard would win
+  // anyway, but a mid-save discard would only confuse the outcome).
   const discardEdits = useCallback(() => {
+    if (saveActiveRef.current) return;
     discardArmedRef.current = true;
     setServerNewer(false);
     setReloadNonce((n) => n + 1);
@@ -159,6 +193,9 @@ export function EditWizard({
       // chosen to keep working, so a later reload must not wipe the draft.
       // (Idempotent assignment; safe under StrictMode double-invocation.)
       discardArmedRef.current = false;
+      // Any new edit retires a settled save outcome: the next save is a
+      // fresh full attempt, never a stale resume.
+      setSaveUi({ phase: "idle" });
       setSession((prev) => {
         if (!prev) return prev;
         const next: EditSession = {
@@ -175,7 +212,9 @@ export function EditWizard({
 
   // Retry an authoritative reload without changing local edits. Used by
   // the inline reload-error banner; unlike discard it never arms adoption.
+  // Parked while a save flight runs, like discard.
   const retryLoad = useCallback(() => {
+    if (saveActiveRef.current) return;
     setLoadError(null);
     setReloadNonce((n) => n + 1);
   }, []);
@@ -185,6 +224,7 @@ export function EditWizard({
   // no backend, no storage writes.
   const openReview = useCallback(() => {
     if (session !== null && editSessionDirty(session)) {
+      setSaveUi({ phase: "idle" });
       setReviewOpen(true);
       window.scrollTo({ top: 0 });
     }
@@ -193,9 +233,180 @@ export function EditWizard({
   // Back to editing: returns to the current chapter with the session
   // intact. Never discards, reloads, or calls the backend.
   const closeReview = useCallback(() => {
+    setSaveUi({ phase: "idle" });
     setReviewOpen(false);
     window.scrollTo({ top: 0 });
   }, []);
+
+  // P2.3c save execution. Captures the live session (identity + updatedAt
+  // generation), runs the orchestrator, and adopts the authoritative
+  // result only when the generation still matches. Every other outcome
+  // leaves the session exactly as it was.
+  const executeSave = useCallback(
+    async (opts: {
+      confirmed: boolean;
+      fromStep?: EditSaveStep;
+      fromDetail?: "price-clear" | "price-full";
+    }) => {
+      const sess = sessionRef.current;
+      if (!sess || !editSessionDirty(sess)) return;
+      if (saveGuardRef.current === null)
+        saveGuardRef.current = createSubmitGuard();
+      const propertyId = normalizeBackendId(sess.draft.backendIds?.propertyId);
+      const unitId = normalizeBackendId(sess.draft.backendIds?.unitId);
+      const listingId = normalizeBackendId(sess.draft.backendIds?.listingId);
+      if (propertyId === null || unitId === null || listingId === null) {
+        setSaveUi({
+          phase: "failed",
+          failure: {
+            ok: false,
+            reason: "context-failed",
+            appliedSteps: [],
+            pendingSteps: [],
+            error:
+              "Couldn't read the saved listing — reload and try again.",
+          },
+        });
+        return;
+      }
+      const captured = sess;
+      saveActiveRef.current = true;
+      setSaveUi({ phase: "saving", planned: [], done: [], current: null });
+      window.scrollTo({ top: 0 });
+      try {
+        const outcome = await runEditSave({
+          draft: sess.draft,
+          snapshot: sess.savedSnapshot,
+          ids: { propertyId, unitId, listingId },
+          generation: sess.updatedAt,
+          significant: hasSignificantChanges(
+            diffListingChanges(sess.savedSnapshot, sess.draft)
+          ),
+          confirmed: opts.confirmed,
+          fromStep: opts.fromStep,
+          fromDetail: opts.fromDetail,
+          guard: saveGuardRef.current,
+          isCurrent: () => sessionRef.current === captured,
+          onProgress: (event) => {
+            if (event.type === "plan") {
+              setSaveUi((prev) =>
+                prev.phase === "saving"
+                  ? { ...prev, planned: event.steps }
+                  : prev
+              );
+            } else if (event.type === "step-start") {
+              setSaveUi((prev) =>
+                prev.phase === "saving"
+                  ? { ...prev, current: event.step }
+                  : prev
+              );
+            } else {
+              setSaveUi((prev) =>
+                prev.phase === "saving" && !prev.done.includes(event.step)
+                  ? {
+                      ...prev,
+                      done: [...prev.done, event.step],
+                      current: null,
+                    }
+                  : prev
+              );
+            }
+          },
+        });
+        if (outcome.ok) {
+          if (outcome.noChanges) {
+            setSaveUi({ phase: "idle" });
+          } else if (outcome.adopted) {
+            const adopted: EditSession = {
+              draft: outcome.freshDraft,
+              savedSnapshot: outcome.freshDraft,
+              updatedAt: Date.now(),
+            };
+            saveEditSession(uid, listingId, adopted);
+            setSession(adopted);
+            setServerNewer(false);
+            setSaveUi({ phase: "saved", stale: false });
+          } else {
+            // Server save completed but the owner kept editing: their
+            // newer draft survives untouched; review shows the remainder.
+            setSaveUi({ phase: "saved", stale: true });
+          }
+        } else {
+          setSaveUi({ phase: "failed", failure: outcome });
+        }
+      } finally {
+        saveActiveRef.current = false;
+        window.scrollTo({ top: 0 });
+      }
+    },
+    [uid]
+  );
+
+  // Retry from the failed logical step with a fresh plan (never stale
+  // bodies). Confirmation stands from the review visit.
+  const retrySave = useCallback(() => {
+    if (saveUi.phase !== "failed") return;
+    const failure = saveUi.failure;
+    if (
+      failure.reason !== "step-failed" &&
+      failure.reason !== "context-failed"
+    )
+      return;
+    void executeSave({
+      confirmed: true,
+      fromStep: failure.failedStep,
+      fromDetail: failure.failedDetail,
+    });
+  }, [saveUi, executeSave]);
+
+  // Reload-only retry: confirms the already-applied save without
+  // repeating any mutation.
+  const retrySaveReload = useCallback(() => {
+    const sess = sessionRef.current;
+    const listingId = normalizeBackendId(sess?.draft.backendIds?.listingId);
+    if (!sess || listingId === null) return;
+    const captured = sess;
+    saveActiveRef.current = true;
+    setSaveUi({ phase: "saving", planned: [], done: [], current: null });
+    void confirmEditSaveReload({
+      listingId,
+      generation: sess.updatedAt,
+      isCurrent: () => sessionRef.current === captured,
+    })
+      .then((outcome) => {
+        if (!outcome.ok) {
+          setSaveUi({
+            phase: "failed",
+            failure: {
+              ok: false,
+              reason: "reload-failed",
+              appliedSteps: [],
+              pendingSteps: [],
+              needsReloadOnly: true,
+              error: outcome.error,
+            },
+          });
+          return;
+        }
+        if (outcome.adopted) {
+          const adopted: EditSession = {
+            draft: outcome.freshDraft,
+            savedSnapshot: outcome.freshDraft,
+            updatedAt: Date.now(),
+          };
+          saveEditSession(uid, listingId, adopted);
+          setSession(adopted);
+          setServerNewer(false);
+          setSaveUi({ phase: "saved", stale: false });
+        } else {
+          setSaveUi({ phase: "saved", stale: true });
+        }
+      })
+      .finally(() => {
+        saveActiveRef.current = false;
+        window.scrollTo({ top: 0 });
+      });
+  }, [uid]);
 
   const goChapter = useCallback(
     (next: ChapterId) => {
@@ -423,7 +634,32 @@ export function EditWizard({
         </div>
       )}
       {reviewOpen ? (
-        <ReviewChanges groups={changeGroups} onBack={closeReview} />
+        saveUi.phase === "saving" ? (
+          <SaveProgressPanel done={saveUi.done} current={saveUi.current} />
+        ) : saveUi.phase === "failed" ? (
+          <SaveFailurePanel
+            failure={saveUi.failure}
+            onRetry={retrySave}
+            onRetryReload={retrySaveReload}
+            onBack={closeReview}
+          />
+        ) : saveUi.phase === "saved" ? (
+          <SaveSuccessPanel stale={saveUi.stale} onBackEditing={closeReview} />
+        ) : (
+          <ReviewChanges
+            groups={changeGroups}
+            onBack={closeReview}
+            save={
+              isDirty
+                ? {
+                    significant: hasSignificantChanges(changeGroups),
+                    onSave: (confirmed: boolean) =>
+                      void executeSave({ confirmed }),
+                  }
+                : undefined
+            }
+          />
+        )
       ) : (
         <>
           {content}

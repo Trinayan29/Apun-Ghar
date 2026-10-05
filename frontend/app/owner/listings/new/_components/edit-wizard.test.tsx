@@ -16,9 +16,11 @@ import {
 import { EditWizard } from "./edit-wizard";
 import {
   hydrateEditDraft,
+  loadEditSession,
   loadEditSource,
   saveEditSession,
 } from "@/lib/listing-edit";
+import { runEditSave } from "@/lib/listing-edit-save";
 
 vi.mock("@/lib/listing-edit", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/listing-edit")>();
@@ -28,7 +30,14 @@ vi.mock("@/lib/listing-edit", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/listing-edit-save", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/listing-edit-save")>();
+  return { ...actual, runEditSave: vi.fn() };
+});
+
 const mockedLoad = vi.mocked(loadEditSource);
+const mockedSave = vi.mocked(runEditSave);
 
 afterEach(() => cleanup());
 
@@ -179,8 +188,7 @@ describe("EditWizard server-newer banner", () => {
   });
 });
 
-describe("EditWizard network behavior", () => {
-  it("opening Edit performs GET reads only, never mutations", async () => {
+describe("EditWizard network behavior", () => {  it("opening Edit performs GET reads only, never mutations", async () => {
     // Real loader + stubbed fetch: the fetch layer records every method
     // so any POST/PATCH/PUT/DELETE during open would fail this test.
     const actual =
@@ -217,5 +225,121 @@ describe("EditWizard network behavior", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("EditWizard save flow", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.clearAllMocks();
+    window.scrollTo = vi.fn() as never;
+  });
+
+  /** Title-only dirty session (non-significant): Save needs no checkbox. */
+  function seedTitleEdit() {
+    window.localStorage.clear();
+    const s = source();
+    const snapshot = hydrateEditDraft({
+      listing: s.listing,
+      unit: s.unit,
+      property: s.property,
+    } as never);
+    const draft = {
+      ...snapshot,
+      listing: { ...snapshot.listing, title: "My local edit" },
+    };
+    saveEditSession("test-uid", 100, {
+      draft,
+      savedSnapshot: snapshot,
+      updatedAt: 1,
+    });
+    mockedLoad.mockResolvedValue(source() as never);
+  }
+
+  async function openReview() {
+    render(<EditWizard uid="test-uid" listingId={100} />);
+    fireEvent.click(await screen.findByText("Review Changes"));
+    await screen.findByText("Review your changes");
+    fireEvent.click(screen.getByText("Save Changes"));
+  }
+
+  it("saves through the orchestrator and adopts the authoritative draft", async () => {
+    seedTitleEdit();
+    const fresh = hydrateEditDraft({
+      listing: { ...source().listing, title: "My local edit" },
+      unit: source().unit,
+      property: source().property,
+    } as never);
+    mockedSave.mockResolvedValue({
+      ok: true,
+      appliedSteps: ["listing"],
+      freshDraft: fresh,
+      adopted: true,
+      staleLocalEdits: false,
+      noChanges: false,
+    });
+    await openReview();
+    await screen.findByText("Changes saved");
+    expect(mockedSave).toHaveBeenCalledTimes(1);
+    const args = mockedSave.mock.calls[0][0];
+    expect(args.confirmed).toBe(false);
+    expect(args.draft.listing.title).toBe("My local edit");
+    expect(args.ids).toEqual({ propertyId: 1, unitId: 10, listingId: 100 });
+    expect(typeof args.isCurrent).toBe("function");
+    // Session adopted + clean in storage.
+    const saved = loadEditSession("test-uid", 100);
+    expect(saved?.draft.listing.title).toBe("My local edit");
+    expect(saved?.savedSnapshot.listing.title).toBe("My local edit");
+    const studioLinks = screen.getAllByRole("link", { name: "Back to Studio" });
+    expect(
+      studioLinks.some((l) => l.textContent === "Back to Studio")
+    ).toBe(true);
+  });
+
+  it("failure shows applied steps and retries from the failed step", async () => {
+    seedTitleEdit();
+    mockedSave.mockResolvedValueOnce({
+      ok: false,
+      reason: "step-failed",
+      failedStep: "listing",
+      appliedSteps: [],
+      pendingSteps: [],
+      error: "Couldn't save Listing: bad title",
+      status: 422,
+    });
+    await openReview();
+    await screen.findByText("Couldn't save your changes");
+    expect(screen.getByText("Retry from Listing")).toBeDefined();
+    mockedSave.mockResolvedValueOnce({
+      ok: true,
+      appliedSteps: ["listing"],
+      freshDraft: hydrateEditDraft(source() as never),
+      adopted: true,
+      staleLocalEdits: false,
+      noChanges: false,
+    });
+    fireEvent.click(screen.getByText("Retry from Listing"));
+    await screen.findByText("Changes saved");
+    expect(mockedSave).toHaveBeenCalledTimes(2);
+    expect(mockedSave.mock.calls[1][0].fromStep).toBe("listing");
+  });
+
+  it("generation mismatch keeps the owner's newer edits", async () => {
+    seedTitleEdit();
+    mockedSave.mockResolvedValue({
+      ok: true,
+      appliedSteps: ["listing"],
+      freshDraft: hydrateEditDraft(source() as never),
+      adopted: false,
+      staleLocalEdits: true,
+      noChanges: false,
+    });
+    await openReview();
+    await screen.findByText("Saved — with newer edits kept");
+    // Stored session still carries the local edit (never overwritten).
+    const saved = loadEditSession("test-uid", 100);
+    expect(saved?.draft.listing.title).toBe("My local edit");
+    fireEvent.click(screen.getByText("Back to editing"));
+    await screen.findByText("What are you renting?");
   });
 });
