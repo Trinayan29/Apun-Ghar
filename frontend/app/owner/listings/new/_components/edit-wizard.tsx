@@ -360,11 +360,15 @@ export function EditWizard({
   }, [saveUi, executeSave]);
 
   // Reload-only retry: confirms the already-applied save without
-  // repeating any mutation.
+  // repeating any mutation. Single-flight through the shared save guard,
+  // like executeSave: a busy guard makes a duplicate tap a safe no-op.
   const retrySaveReload = useCallback(() => {
     const sess = sessionRef.current;
     const listingId = normalizeBackendId(sess?.draft.backendIds?.listingId);
     if (!sess || listingId === null) return;
+    if (saveGuardRef.current === null)
+      saveGuardRef.current = createSubmitGuard();
+    if (!saveGuardRef.current.tryStart()) return;
     const captured = sess;
     saveActiveRef.current = true;
     setSaveUi({ phase: "saving", planned: [], done: [], current: null });
@@ -403,6 +407,7 @@ export function EditWizard({
         }
       })
       .finally(() => {
+        saveGuardRef.current?.finish();
         saveActiveRef.current = false;
         window.scrollTo({ top: 0 });
       });
@@ -635,7 +640,11 @@ export function EditWizard({
       )}
       {reviewOpen ? (
         saveUi.phase === "saving" ? (
-          <SaveProgressPanel done={saveUi.done} current={saveUi.current} />
+          <SaveProgressPanel
+            planned={saveUi.planned}
+            done={saveUi.done}
+            current={saveUi.current}
+          />
         ) : saveUi.phase === "failed" ? (
           <SaveFailurePanel
             failure={saveUi.failure}

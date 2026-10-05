@@ -276,10 +276,46 @@ describe("SaveActionRow behavior", () => {
 
 describe("Save panels", () => {
   it("progress shows done, current, and pending steps", () => {
-    render(<SaveProgressPanel done={["property", "unit"]} current="listing" />);
+    render(
+      <SaveProgressPanel
+        planned={["property", "unit", "listing", "price", "availability"]}
+        done={["property", "unit"]}
+        current="listing"
+      />
+    );
     expect(screen.getByText("Saving changes")).toBeDefined();
     expect(screen.getByText("Property")).toBeDefined();
     expect(screen.getByText("Availability")).toBeDefined();
+    expect(screen.queryByText("Not needed")).toBeNull();
+  });
+
+  it("title-only plan marks only Listing actionable", () => {
+    render(
+      <SaveProgressPanel planned={["listing"]} done={[]} current="listing" />
+    );
+    expect(screen.getByText("Listing")).toBeDefined();
+    // The four unplanned steps read as not needed, never pending.
+    expect(screen.getAllByText("Not needed")).toHaveLength(4);
+    expect(screen.queryByText("Not attempted")).toBeNull();
+  });
+
+  it("property-only plan marks only Property actionable", () => {
+    render(
+      <SaveProgressPanel planned={["property"]} done={["property"]} current={null} />
+    );
+    expect(screen.getAllByText("Not needed")).toHaveLength(4);
+  });
+
+  it("pricing stays one logical row under the planned set", () => {
+    render(
+      <SaveProgressPanel
+        planned={["listing", "price"]}
+        done={["listing"]}
+        current="price"
+      />
+    );
+    expect(screen.getAllByText("Pricing")).toHaveLength(1);
+    expect(screen.getAllByText("Not needed")).toHaveLength(3);
   });
 
   it("failure names the step, lists applied/pending, and retries", () => {
@@ -334,6 +370,49 @@ describe("Save panels", () => {
     fireEvent.click(screen.getByText("Retry confirmation"));
     expect(onRetryReload).toHaveBeenCalledTimes(1);
     expect(onRetry).not.toHaveBeenCalled();
+  });
+
+  it("pricingCleared renders an explicit partial-pricing status", () => {
+    render(
+      <SaveFailurePanel
+        failure={{
+          ok: false,
+          reason: "step-failed",
+          failedStep: "listing",
+          appliedSteps: [],
+          pendingSteps: ["availability"],
+          pricingCleared: true,
+          error: "Couldn't save Listing. Pricing was already reset.",
+        }}
+        onRetry={() => {}}
+        onRetryReload={() => {}}
+        onBack={() => {}}
+      />
+    );
+    expect(screen.getByText(/partially reset/)).toBeDefined();
+    // Pricing appears in neither the saved nor the not-attempted list.
+    expect(screen.queryByText(/Not attempted:.*Pricing/)).toBeNull();
+    expect(screen.getByText("Retry from Listing")).toBeDefined();
+  });
+
+  it("normal failure renders no pricing partial status", () => {
+    render(
+      <SaveFailurePanel
+        failure={{
+          ok: false,
+          reason: "step-failed",
+          failedStep: "listing",
+          appliedSteps: ["property"],
+          pendingSteps: ["price", "availability"],
+          error: "Couldn't save Listing.",
+        }}
+        onRetry={() => {}}
+        onRetryReload={() => {}}
+        onBack={() => {}}
+      />
+    );
+    expect(screen.queryByText(/partially reset/)).toBeNull();
+    expect(screen.getByText(/Not attempted: Pricing, Availability/)).toBeDefined();
   });
 
   it("success ends at the Studio, or editing when stale", () => {

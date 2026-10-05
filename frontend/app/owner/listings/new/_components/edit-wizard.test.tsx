@@ -20,7 +20,7 @@ import {
   loadEditSource,
   saveEditSession,
 } from "@/lib/listing-edit";
-import { runEditSave } from "@/lib/listing-edit-save";
+import { runEditSave, confirmEditSaveReload } from "@/lib/listing-edit-save";
 
 vi.mock("@/lib/listing-edit", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/listing-edit")>();
@@ -33,11 +33,16 @@ vi.mock("@/lib/listing-edit", async (importOriginal) => {
 vi.mock("@/lib/listing-edit-save", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("@/lib/listing-edit-save")>();
-  return { ...actual, runEditSave: vi.fn() };
+  return {
+    ...actual,
+    runEditSave: vi.fn(),
+    confirmEditSaveReload: vi.fn(),
+  };
 });
 
 const mockedLoad = vi.mocked(loadEditSource);
 const mockedSave = vi.mocked(runEditSave);
+const mockedReloadConfirm = vi.mocked(confirmEditSaveReload);
 
 afterEach(() => cleanup());
 
@@ -341,5 +346,120 @@ describe("EditWizard save flow", () => {
     expect(saved?.draft.listing.title).toBe("My local edit");
     fireEvent.click(screen.getByText("Back to editing"));
     await screen.findByText("What are you renting?");
+  });
+
+  it("double reload retry issues a single confirmation", async () => {
+    seedTitleEdit();
+    mockedSave.mockResolvedValue({
+      ok: false,
+      reason: "reload-failed",
+      appliedSteps: ["listing"],
+      pendingSteps: [],
+      needsReloadOnly: true,
+      error: "Your changes were saved, but we couldn't confirm.",
+    });
+    mockedReloadConfirm.mockResolvedValue({
+      ok: true,
+      freshDraft: hydrateEditDraft(source() as never),
+      adopted: true,
+      staleLocalEdits: false,
+    });
+    render(<EditWizard uid="test-uid" listingId={100} />);
+    fireEvent.click(await screen.findByText("Review Changes"));
+    await screen.findByText("Review your changes");
+    fireEvent.click(screen.getByText("Save Changes"));
+    const retry = await screen.findByText("Retry confirmation");
+    // Two rapid taps: single-flight guard makes the second a no-op.
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+    await screen.findByText("Changes saved");
+    expect(mockedReloadConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("failed reload confirmation keeps the dirty session and retries", async () => {
+    seedTitleEdit();
+    mockedSave.mockResolvedValue({
+      ok: false,
+      reason: "reload-failed",
+      appliedSteps: ["listing"],
+      pendingSteps: [],
+      needsReloadOnly: true,
+      error: "Your changes were saved, but we couldn't confirm.",
+    });
+    mockedReloadConfirm.mockResolvedValueOnce({
+      ok: false,
+      error: "Still couldn't confirm — try again.",
+    });
+    render(<EditWizard uid="test-uid" listingId={100} />);
+    fireEvent.click(await screen.findByText("Review Changes"));
+    await screen.findByText("Review your changes");
+    fireEvent.click(screen.getByText("Save Changes"));
+    await screen.findByText("Saved, but couldn't confirm");
+    fireEvent.click(screen.getByText("Retry confirmation"));
+    await screen.findByText("Saved, but couldn't confirm");
+    // Draft preserved and still dirty in storage; retry stays available.
+    const saved = loadEditSession("test-uid", 100);
+    expect(saved?.draft.listing.title).toBe("My local edit");
+    expect(screen.getByText("Retry confirmation")).toBeDefined();
+  });
+
+  it("discard during a save flight is safely ignored", async () => {
+    // Dirty session with a genuinely newer server state: banner visible.
+    window.localStorage.clear();
+    const s = source();
+    const snapshot = hydrateEditDraft({
+      listing: s.listing,
+      unit: s.unit,
+      property: s.property,
+    } as never);
+    const draft = {
+      ...snapshot,
+      listing: { ...snapshot.listing, title: "My local edit" },
+    };
+    saveEditSession("test-uid", 100, {
+      draft,
+      savedSnapshot: snapshot,
+      updatedAt: 1,
+    });
+    mockedLoad.mockResolvedValue({
+      listing: { ...s.listing, title: "Server renamed" },
+      unit: s.unit,
+      property: s.property,
+    } as never);
+    let resolveSave!: (
+      value: Awaited<ReturnType<typeof runEditSave>>
+    ) => void;
+    mockedSave.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSave = resolve;
+      })
+    );
+    render(<EditWizard uid="test-uid" listingId={100} />);
+    await screen.findByText("Server has newer data.");
+    fireEvent.click(await screen.findByText("Review Changes"));
+    await screen.findByText("Review your changes");
+    fireEvent.click(screen.getByText("Save Changes"));
+    await screen.findByText("Saving changes");
+    // Discard tapped mid-flight: parked, no reload issued.
+    const loadsBefore = mockedLoad.mock.calls.length;
+    fireEvent.click(screen.getByText("Discard & reload"));
+    expect(mockedLoad.mock.calls.length).toBe(loadsBefore);
+    // The save then completes and adopts authoritatively.
+    const fresh = hydrateEditDraft({
+      listing: { ...s.listing, title: "My local edit" },
+      unit: s.unit,
+      property: s.property,
+    } as never);
+    resolveSave({
+      ok: true,
+      appliedSteps: ["listing"],
+      freshDraft: fresh,
+      adopted: true,
+      staleLocalEdits: false,
+      noChanges: false,
+    });
+    await screen.findByText("Changes saved");
+    const saved = loadEditSession("test-uid", 100);
+    expect(saved?.draft.listing.title).toBe("My local edit");
   });
 });

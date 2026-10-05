@@ -207,13 +207,17 @@ const SAVE_PROGRESS_STEPS: EditSaveStep[] = [
 ];
 
 /**
- * P2.3c save progress. Renders completed / in-flight / pending logical
- * steps. Rent-basis substeps stay hidden: pricing appears as one step.
+ * P2.3c save progress. Renders the planned logical steps only: done /
+ * in-flight / pending for steps the orchestrator will actually run, and
+ * a dimmed "Not needed" state for the rest. Rent-basis substeps stay
+ * hidden: pricing appears as one step.
  */
 export function SaveProgressPanel({
+  planned = SAVE_PROGRESS_STEPS,
   done,
   current,
 }: {
+  planned?: EditSaveStep[];
   done: EditSaveStep[];
   current: EditSaveStep | null;
 }) {
@@ -226,12 +230,15 @@ export function SaveProgressPanel({
     >
       <ol className="space-y-2">
         {SAVE_PROGRESS_STEPS.map((step) => {
+          const needed = planned.includes(step);
           const isDone = done.includes(step);
-          const isCurrent = !isDone && current === step;
+          const isCurrent = needed && !isDone && current === step;
           return (
             <li
               key={step}
-              className="flex items-center gap-3 rounded-2xl border border-line bg-white px-4 py-3"
+              className={`flex items-center gap-3 rounded-2xl border border-line bg-white px-4 py-3 ${
+                needed ? "" : "opacity-60"
+              }`}
             >
               <span
                 aria-hidden
@@ -243,13 +250,24 @@ export function SaveProgressPanel({
                       : "bg-paper text-muted"
                 }`}
               >
-                {isDone ? "✓" : isCurrent ? "→" : "○"}
+                {isDone ? "✓" : isCurrent ? "→" : needed ? "○" : "–"}
               </span>
               <span className="text-[14.5px] font-bold">
                 {EDIT_SAVE_STEP_LABELS[step]}
               </span>
+              {!needed && (
+                <span className="text-[12.5px] font-semibold text-muted">
+                  Not needed
+                </span>
+              )}
               <span className="sr-only">
-                {isDone ? "saved" : isCurrent ? "saving" : "pending"}
+                {isDone
+                  ? "saved"
+                  : isCurrent
+                    ? "saving"
+                    : needed
+                      ? "pending"
+                      : "not needed"}
               </span>
             </li>
           );
@@ -292,6 +310,12 @@ export function SaveFailurePanel({
         {failure.appliedSteps.length > 0 && (
           <p className="mt-3 rounded-2xl bg-cream px-4 py-3 text-[14px] font-bold">
             Already saved: {labels(failure.appliedSteps)}.
+          </p>
+        )}
+        {failure.pricingCleared === true && (
+          <p className="mt-2 rounded-2xl border border-line bg-cream px-4 py-3 text-[14px]">
+            <span className="font-bold">Pricing:</span> partially reset —
+            will be restored on retry.
           </p>
         )}
         {failure.pendingSteps.length > 0 && (
