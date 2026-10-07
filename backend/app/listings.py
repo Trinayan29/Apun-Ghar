@@ -1048,3 +1048,84 @@ def pause_listing(
     paused = _sort_nested(_owned_listing_or_404(db, listing.id, user.id))
     _attach_view_urls(paused.photos, storage)
     return paused
+
+
+@router.delete(
+    "/{listing_id}/draft",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_owner_draft(
+    listing_id: int,
+    user: User = Depends(require_role("OWNER")),
+    db: Session = Depends(get_db),
+    storage: StorageService | None = Depends(get_storage_or_none),
+):
+    """Permanently delete an unfinished DRAFT listing and its dependents.
+
+    Domain-specific on purpose: there are intentionally no generic DELETE
+    endpoints for Property, RentalUnit, or Listing. The listing row goes
+    with its price components and photo rows (ORM cascades); the rental
+    unit goes only when no listing references it at all. The property is
+    NEVER deleted here: it may be shared/reused, and draft provenance is
+    not persisted server-side, so safe-by-default means retaining it.
+    """
+    listing = _owned_listing_or_404(db, listing_id, user.id)
+    if listing.status != "DRAFT":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="only DRAFT listings can be deleted",
+        )
+    unit_id = listing.rental_unit_id
+    if storage is not None:
+        # Fail closed like the photo delete: a storage failure keeps every
+        # row so the owner can retry instead of silently leaking orphans.
+        # delete_object treats missing objects as success, so retrying
+        # after a partial sweep is safe.
+        try:
+            for photo in listing.photos:
+                storage.delete_object(photo.storage_key)
+        except StorageError:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="photo storage is unavailable — try again",
+            )
+    # One database transaction for all relational work: the listing
+    # delete, the unit safety check, and the conditional unit delete
+    # commit atomically, so a failure never reports an error for a
+    # deletion that already happened. autoflush is disabled for this
+    # app's sessions, so flush explicitly wherever a later statement
+    # must observe an earlier write.
+    try:
+        # Lock the unit row for the rest of this transaction. A listing
+        # INSERT takes a FOR KEY SHARE lock on this row for its foreign
+        # key check, which conflicts with FOR UPDATE in both orders —
+        # so no concurrent listing can slip in between the check below
+        # and the conditional delete. (FOR NO KEY UPDATE would not
+        # suffice, and the partial unique index alone does not cover
+        # non-active statuses.)
+        unit = (
+            db.execute(
+                select(RentalUnit)
+                .where(RentalUnit.id == unit_id)
+                .with_for_update()
+            )
+            .scalars()
+            .first()
+        )
+        db.delete(listing)
+        db.flush()
+        # No status predicate on purpose: historical (ARCHIVED/RENTED)
+        # rows protect the unit exactly like current ones.
+        remaining = db.execute(
+            select(Listing.id).where(Listing.rental_unit_id == unit_id)
+        ).scalars().first()
+        if remaining is None and unit is not None:
+            db.delete(unit)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="listing data violates database constraints",
+        )
+    return None

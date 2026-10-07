@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 import uuid
 from datetime import date, timedelta
 
@@ -1966,3 +1968,333 @@ def test_photo_confirm_metadata_persists(client):
     assert data["display_order"] == 4
     assert data["is_cover"] is True
     assert data["upload_status"] == "READY"
+
+
+# DRAFT DELETION
+#
+# Reuses the existing add_ready_photo helper (defined above with the
+# photo tests) rather than duplicating upload plumbing.
+
+
+def put_prices(client, uid, listing_id, rows):
+    res = authed(client, uid=uid).put(
+        f"/api/v1/owner/listings/{listing_id}/price-components", json=rows
+    )
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def rows_for(engine, model, **filters):
+    db = sessionmaker(bind=engine)()
+    try:
+        q = db.query(model)
+        for key, value in filters.items():
+            q = q.filter(getattr(model, key) == value)
+        return q.all()
+    finally:
+        db.close()
+
+
+def test_draft_delete_own_draft_204(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    res = authed(client, uid=UID).delete(
+        f"/api/v1/owner/listings/{created['id']}/draft"
+    )
+    assert res.status_code == 204, res.text
+    assert rows_for(engine, Listing, id=created["id"]) == []
+
+
+def test_draft_delete_cleans_dependents_and_storage(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    lid = created["id"]
+    put_prices(
+        client,
+        UID,
+        lid,
+        [
+            valid_price(display_order=0),
+            valid_price(
+                charge_type="DEPOSIT",
+                calculation_basis="PER_PERSON",
+                billing_frequency="ONE_TIME",
+                variability="FIXED",
+                amount_paise=500000,
+                payment_timing="UPFRONT_FULL",
+                mandatory=True,
+                included_in_advertised=False,
+                refundable=True,
+                display_order=1,
+            ),
+        ],
+    )
+    p1 = add_ready_photo(client, UID, lid, display_order=0, is_cover=True)
+    p2 = add_ready_photo(client, UID, lid, display_order=1, is_cover=False)
+    assert len(rows_for(engine, ListingPriceComponent, listing_id=lid)) == 2
+    assert len(rows_for(engine, ListingPhoto, listing_id=lid)) == 2
+    res = authed(client, uid=UID).delete(
+        f"/api/v1/owner/listings/{lid}/draft"
+    )
+    assert res.status_code == 204, res.text
+    assert rows_for(engine, Listing, id=lid) == []
+    assert rows_for(engine, ListingPriceComponent, listing_id=lid) == []
+    assert rows_for(engine, ListingPhoto, listing_id=lid) == []
+    assert set(_fake().deleted) == {p1["storage_key"], p2["storage_key"]}
+
+
+def test_draft_delete_cross_owner_404(client, engine):
+    provision_owner(client, UID)
+    provision_owner(client, OTHER_UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    res = authed(client, uid=OTHER_UID).delete(
+        f"/api/v1/owner/listings/{created['id']}/draft"
+    )
+    assert res.status_code == 404, res.text
+    assert len(rows_for(engine, Listing, id=created["id"])) == 1
+
+
+def test_draft_delete_unauthenticated_401(client):
+    res = client.delete("/api/v1/owner/listings/1/draft")
+    assert res.status_code == 401, res.text
+
+
+def test_draft_delete_user_role_403(client):
+    provision_user(client, USER_UID)
+    res = authed(client, uid=USER_UID).delete(
+        "/api/v1/owner/listings/1/draft"
+    )
+    assert res.status_code == 403, res.text
+
+
+def test_draft_delete_non_draft_422(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    for lifecycle in ("PUBLISHED", "PAUSED", "RENTED", "ARCHIVED"):
+        created = create_listing(client, UID, unit_id)
+        set_listing_status(engine, created["id"], lifecycle)
+        p = add_ready_photo(client, UID, created["id"])
+        res = authed(client, uid=UID).delete(
+            f"/api/v1/owner/listings/{created['id']}/draft"
+        )
+        assert res.status_code == 422, (lifecycle, res.text)
+        assert len(rows_for(engine, Listing, id=created["id"])) == 1
+        assert len(rows_for(engine, ListingPhoto, id=p["id"])) == 1
+        assert p["storage_key"] not in _fake().deleted
+        set_listing_status(engine, created["id"], "ARCHIVED")
+
+
+def test_draft_delete_nonexistent_404(client):
+    provision_owner(client, UID)
+    res = authed(client, uid=UID).delete(
+        "/api/v1/owner/listings/999999/draft"
+    )
+    assert res.status_code == 404, res.text
+
+
+def test_draft_delete_repeated_404(client):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    first = authed(client, uid=UID).delete(
+        f"/api/v1/owner/listings/{created['id']}/draft"
+    )
+    assert first.status_code == 204, first.text
+    second = authed(client, uid=UID).delete(
+        f"/api/v1/owner/listings/{created['id']}/draft"
+    )
+    assert second.status_code == 404, second.text
+
+
+def test_draft_delete_keeps_unit_with_historical_listing(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    old = create_listing(client, UID, unit_id)
+    set_listing_status(engine, old["id"], "ARCHIVED")
+    draft = create_listing(client, UID, unit_id)
+    res = authed(client, uid=UID).delete(
+        f"/api/v1/owner/listings/{draft['id']}/draft"
+    )
+    assert res.status_code == 204, res.text
+    assert rows_for(engine, Listing, id=draft["id"]) == []
+    assert len(rows_for(engine, Listing, id=old["id"])) == 1
+    assert len(rows_for(engine, RentalUnit, id=unit_id)) == 1
+
+
+def test_draft_delete_keeps_unit_with_rented_listing(client, engine):
+    # The unit-safety check has no status predicate: a RENTED listing
+    # protects the unit exactly like an ARCHIVED one, even though
+    # RENTED rows are not covered by uq_listings_unit_active.
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    old = create_listing(client, UID, unit_id)
+    set_listing_status(engine, old["id"], "RENTED")
+    draft = create_listing(client, UID, unit_id)
+    res = authed(client, uid=UID).delete(
+        f"/api/v1/owner/listings/{draft['id']}/draft"
+    )
+    assert res.status_code == 204, res.text
+    assert rows_for(engine, Listing, id=draft["id"]) == []
+    assert len(rows_for(engine, Listing, id=old["id"])) == 1
+    assert len(rows_for(engine, RentalUnit, id=unit_id)) == 1
+
+
+def test_draft_delete_shared_property_survives(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_a = create_unit(client, UID, pid)
+    other = create_listing(client, UID, unit_a)
+    unit_b = create_unit(client, UID, pid)
+    draft = create_listing(client, UID, unit_b)
+    res = authed(client, uid=UID).delete(
+        f"/api/v1/owner/listings/{draft['id']}/draft"
+    )
+    assert res.status_code == 204, res.text
+    assert rows_for(engine, Listing, id=draft["id"]) == []
+    assert len(rows_for(engine, Listing, id=other["id"])) == 1
+    assert len(rows_for(engine, RentalUnit, id=unit_a)) == 1
+    assert len(rows_for(engine, Property, id=pid)) == 1
+
+
+def test_draft_delete_retains_orphaned_property(client, engine):
+    # Backend cannot prove the property was created for this draft
+    # (provenance lives only in frontend state), so safe-by-default
+    # retains it even when no rental units remain.
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    res = authed(client, uid=UID).delete(
+        f"/api/v1/owner/listings/{created['id']}/draft"
+    )
+    assert res.status_code == 204, res.text
+    assert rows_for(engine, RentalUnit, id=unit_id) == []
+    assert len(rows_for(engine, Property, id=pid)) == 1
+
+
+def test_draft_delete_storage_failure_503_keeps_rows(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    lid = created["id"]
+    put_prices(client, UID, lid, [valid_price()])
+    p1 = add_ready_photo(client, UID, lid, display_order=0, is_cover=True)
+    p2 = add_ready_photo(client, UID, lid, display_order=1, is_cover=False)
+    _fake().fail_keys.add(p2["storage_key"])
+    try:
+        res = authed(client, uid=UID).delete(
+            f"/api/v1/owner/listings/{lid}/draft"
+        )
+        assert res.status_code == 503, res.text
+        assert len(rows_for(engine, Listing, id=lid)) == 1
+        assert len(rows_for(engine, ListingPhoto, listing_id=lid)) == 2
+        assert len(rows_for(engine, ListingPriceComponent, listing_id=lid)) == 1
+    finally:
+        _fake().fail_keys.discard(p2["storage_key"])
+
+
+def test_draft_delete_storage_unconfigured(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    app.dependency_overrides[get_storage_or_none] = lambda: None
+    res = authed(client, uid=UID).delete(
+        f"/api/v1/owner/listings/{created['id']}/draft"
+    )
+    assert res.status_code == 204, res.text
+    assert rows_for(engine, Listing, id=created["id"]) == []
+
+
+def test_draft_delete_surviving_unit_accepts_new_draft(client, engine):
+    # A unit whose ONLY listing is the deleted DRAFT is itself removed,
+    # so it can never be reused afterward. Re-listing on the same unit
+    # is possible only when the unit survives — i.e. it keeps another
+    # (here ARCHIVED) listing. This test proves that surviving-unit
+    # case: the old DRAFT row is gone, so uq_listings_unit_active no
+    # longer blocks the unit and a fresh DRAFT can be created on it.
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    old = create_listing(client, UID, unit_id)
+    set_listing_status(engine, old["id"], "ARCHIVED")
+    created = create_listing(client, UID, unit_id)
+    res = authed(client, uid=UID).delete(
+        f"/api/v1/owner/listings/{created['id']}/draft"
+    )
+    assert res.status_code == 204, res.text
+    assert rows_for(engine, Listing, id=created["id"]) == []
+    assert len(rows_for(engine, Listing, id=old["id"])) == 1
+    assert len(rows_for(engine, RentalUnit, id=unit_id)) == 1
+    again = create_listing(client, UID, unit_id)
+    assert again["status"] == "DRAFT"
+
+
+def test_draft_delete_occupied_draft(client, engine):
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(
+        client, UID, unit_id, availability_status="OCCUPIED"
+    )
+    assert created["availability_status"] == "OCCUPIED"
+    res = authed(client, uid=UID).delete(
+        f"/api/v1/owner/listings/{created['id']}/draft"
+    )
+    assert res.status_code == 204, res.text
+    assert rows_for(engine, Listing, id=created["id"]) == []
+
+
+def test_draft_delete_concurrent_create_not_silently_lost(client, engine):
+    # True race test: a listing created on the same unit while a draft
+    # delete is in flight must never be silently destroyed. Every
+    # interleaving has a defined, loud outcome —
+    #   * creator fully first: 409 from uq_listings_unit_active,
+    #   * creator interleaved: blocks on the delete's unit row lock,
+    #     then 422 (unit gone) once the delete commits,
+    #   * creator after the delete: 404 (unit gone) —
+    # while the delete itself always reports 204. The assertions below
+    # hold for all interleavings, so this test is deterministic, not
+    # timing-dependent: a design deadlock would surface as a join
+    # timeout failure, silent loss as surviving-or-missing rows.
+    # Each thread drives its own TestClient: one TestClient instance
+    # must not serve concurrent requests, so sharing it here would
+    # test the harness instead of the database behavior.
+    provision_owner(client, UID)
+    pid = create_property(client, UID)
+    unit_id = create_unit(client, UID, pid)
+    created = create_listing(client, UID, unit_id)
+    lid = created["id"]
+    results = {}
+
+    def deleter():
+        worker = TestClient(app, raise_server_exceptions=False)
+        results["delete"] = authed(worker, uid=UID).delete(
+            f"/api/v1/owner/listings/{lid}/draft"
+        )
+
+    th = threading.Thread(target=deleter)
+    th.start()
+    time.sleep(0.2)
+    res = authed(client, uid=UID).post(
+        "/api/v1/owner/listings", json=valid_listing(unit_id)
+    )
+    results["create"] = res.status_code
+    th.join(30)
+    assert not th.is_alive()
+    assert results["delete"].status_code == 204, results["delete"].text
+    assert results["create"] in (404, 409, 422), results["create"]
+    assert rows_for(engine, Listing, id=lid) == []
+    assert rows_for(engine, RentalUnit, id=unit_id) == []
+    assert rows_for(engine, Listing, rental_unit_id=unit_id) == []
