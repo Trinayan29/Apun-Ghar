@@ -354,6 +354,11 @@ export const publishOwnerListing = (
 ): Promise<OwnerListingItem> =>
   apiPost<OwnerListingItem>(`/api/v1/owner/listings/${listingId}/publish`, {});
 
+/** Delete an unfinished DRAFT listing and its dependents. Guards live
+ * server-side; the backend also owns B2 object cleanup. */
+export const deleteOwnerDraft = (listingId: number): Promise<null> =>
+  apiDelete(`/api/v1/owner/listings/${listingId}/draft`);
+
 export type LocationKind = "college" | "workplace" | "area";
 
 export const listLocations = (

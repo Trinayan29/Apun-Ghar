@@ -23,7 +23,17 @@ import {
   submitErrorMessage,
   type SubmitGuard,
 } from "@/lib/listing-submit-action";
-import { loadStudioData, type StudioData } from "@/lib/studio-data";
+import {
+  createDeleteDraftGuard,
+  runDeleteDraft,
+  type DeleteDraftGuard,
+  type DeleteDraftOutcome,
+} from "@/lib/draft-delete";
+import {
+  loadStudioData,
+  type StudioData,
+  type StudioDraft,
+} from "@/lib/studio-data";
 import { StudioShell } from "./_components/studio-shell";
 import { IdentityStrip } from "./_components/identity-strip";
 import { AddPlaceButton } from "./_components/add-place-button";
@@ -46,7 +56,7 @@ export default function OwnerDashboardPage() {
 function Dashboard() {
   const router = useRouter();
   const { firebaseUser, loading: authLoading } = useAuth();
-  const { getDraft, updateDraft } = useListingDrafts();
+  const { getDraft, updateDraft, deleteDraft } = useListingDrafts();
   const [me, setMe] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -201,6 +211,35 @@ function Dashboard() {
     [getDraft, updateDraft, loadStudio, router]
   );
 
+  // Delete Draft: single-flight guard shared across cards, per the Retry
+  // pattern above. Local cleanup runs only after backend success (the
+  // orchestrator enforces this); flushSync forces the store's
+  // localStorage write before the reload reads it back, otherwise the
+  // deleted draft would reappear from stale storage. On failure the
+  // draft is kept and the card surfaces the error.
+  const deleteGuardRef = useRef<DeleteDraftGuard | null>(null);
+  if (deleteGuardRef.current === null)
+    deleteGuardRef.current = createDeleteDraftGuard();
+
+  const handleDeleteDraft = useCallback(
+    async (draft: StudioDraft): Promise<DeleteDraftOutcome> => {
+      const outcome = await runDeleteDraft({
+        draft,
+        guard: deleteGuardRef.current as DeleteDraftGuard,
+        removeLocal: () => {
+          flushSync(() => {
+            deleteDraft(draft.draftId);
+          });
+        },
+      });
+      if (outcome.type === "done" && outcome.result.ok) {
+        await loadStudio();
+      }
+      return outcome;
+    },
+    [deleteDraft, loadStudio]
+  );
+
   const draftTitles = useMemo(() => {
     if (!studio) return {};
     return Object.fromEntries(
@@ -294,7 +333,11 @@ function Dashboard() {
               />
             )}
             {studio !== null && (
-              <ContinueDrafts drafts={studio.drafts} attention={studio.attention} />
+              <ContinueDrafts
+                drafts={studio.drafts}
+                attention={studio.attention}
+                onDelete={(draft) => handleDeleteDraft(draft)}
+              />
             )}
             {studio !== null && (
               <YourPlaces

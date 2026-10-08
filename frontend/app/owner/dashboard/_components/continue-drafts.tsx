@@ -1,4 +1,5 @@
 import { OwnerSectionLabel } from "@/components/owner-ui";
+import type { DeleteDraftOutcome } from "@/lib/draft-delete";
 import type { StudioAttention, StudioDraft } from "@/lib/studio-data";
 import { DraftCard } from "./draft-card";
 
@@ -26,9 +27,12 @@ function sortResumable(drafts: StudioDraft[]): StudioDraft[] {
 export function ContinueDrafts({
   drafts,
   attention,
+  onDelete,
 }: {
   drafts: StudioDraft[];
   attention: StudioAttention[];
+  /** Delete wiring; when absent, cards render without the overflow menu. */
+  onDelete?: (draft: StudioDraft) => Promise<DeleteDraftOutcome>;
 }) {
   const attentionIds = new Set(
     attention.map((item) => item.draftId).filter((id): id is string => id !== null)
@@ -40,7 +44,7 @@ export function ContinueDrafts({
       <OwnerSectionLabel>Continue where you left off</OwnerSectionLabel>
       <div className="mt-2.5 space-y-2.5">
         {resumable.map((draft) => (
-          <DraftCard key={draft.draftId} draft={draft} />
+          <DraftCard key={draft.draftId} draft={draft} onDelete={onDelete} />
         ))}
       </div>
     </section>

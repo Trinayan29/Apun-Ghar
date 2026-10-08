@@ -108,6 +108,11 @@ export interface StudioDraft {
   /** "local" = never sent; "pending" = backend ids/progress recorded. */
   kind: "local" | "pending";
   backendIds: { propertyId: number | null; unitId: number | null; listingId: number | null };
+  /** Authoritative backend lifecycle of the linked listing ("DRAFT",
+   * "PUBLISHED", ...), verbatim. Null when the draft links to no
+   * backend listing, or when that listing is unknown to this load.
+   * UX-only gate: the backend DELETE endpoint remains the authority. */
+  linkedLifecycle: string | null;
   progress: { price: boolean; availability: boolean };
   /** Steps still outstanding (empty for local drafts by definition). */
   remainingSteps: SubmitStep[];
@@ -346,7 +351,10 @@ function remainingStepsFor(d: ListingDraft): SubmitStep[] {
   return steps;
 }
 
-function normalizeDraft(d: ListingDraft): StudioDraft {
+function normalizeDraft(
+  d: ListingDraft,
+  lifecycleByListingId: Map<number, string>
+): StudioDraft {
   const backendIds = {
     propertyId: normalizeBackendId(d.backendIds?.propertyId),
     unitId: normalizeBackendId(d.backendIds?.unitId),
@@ -371,6 +379,10 @@ function normalizeDraft(d: ListingDraft): StudioDraft {
     furthestChapter: d.furthestChapter,
     kind: sent ? "pending" : "local",
     backendIds,
+    linkedLifecycle:
+      backendIds.listingId === null
+        ? null
+        : (lifecycleByListingId.get(backendIds.listingId) ?? null),
     progress,
     remainingSteps: sent ? remainingStepsFor(d) : [],
   };
@@ -451,20 +463,21 @@ export function aggregateStudioData(input: StudioInput): StudioData {
     });
   }
 
-  const drafts = input.drafts.map(normalizeDraft);
-
   const allListings = properties.flatMap((p) =>
     p.units.flatMap((u) => (u.listing ? [{ listing: u.listing, unitId: u.id, propertyId: p.id }] : []))
   );
+  const lifecycleByListingId = new Map(
+    allListings.map((l) => [l.listing.id, l.listing.lifecycle] as const)
+  );
+
+  const drafts = input.drafts.map((d) => normalizeDraft(d, lifecycleByListingId));
+
   // Authoritative lifecycle filter: a local draft linked to a live backend
   // listing (PUBLISHED/PAUSED) is not resumable work — the wizard only
   // creates, it never edits live rows — so it is excluded before the
   // resume/attention/count surfaces derive. Unknown or missing listings
   // (including a failed listings fetch) fail open: drafts never vanish on
   // transient backend trouble. LocalStorage is never touched here.
-  const lifecycleByListingId = new Map(
-    allListings.map((l) => [l.listing.id, l.listing.lifecycle] as const)
-  );
   const isLiveLinked = (d: (typeof drafts)[number]): boolean => {
     const id = d.backendIds.listingId;
     if (id === null || input.listings === null) return false;

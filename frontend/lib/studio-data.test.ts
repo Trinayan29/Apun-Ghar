@@ -434,6 +434,62 @@ describe("sent-but-incomplete drafts", () => {
   });
 });
 
+describe("linkedLifecycle", () => {
+  function linkedInput(status: string, listingId: number) {
+    const d = draft("p1");
+    d.backendIds = { propertyId: 1, unitId: 10, listingId };
+    return input({
+      properties: [prop(1)],
+      unitsByProperty: { 1: [unit(10, 1)] },
+      listings: [listing(100, 10, { status })],
+      drafts: [d],
+    });
+  }
+
+  it("is null for a local draft with no backend listing", () => {
+    const data = aggregateStudioData(input({ drafts: [draft("d1")] }));
+    expect(data.drafts).toHaveLength(1);
+    expect(data.drafts[0].linkedLifecycle).toBeNull();
+  });
+
+  it("is DRAFT for a draft linked to a DRAFT backend listing", () => {
+    const data = aggregateStudioData(linkedInput("DRAFT", 100));
+    expect(data.drafts).toHaveLength(1);
+    expect(data.drafts[0].linkedLifecycle).toBe("DRAFT");
+  });
+
+  it("represents RENTED and ARCHIVED verbatim without filtering the draft", () => {
+    for (const status of ["RENTED", "ARCHIVED"]) {
+      const data = aggregateStudioData(linkedInput(status, 100));
+      // Not live-linked, so the draft still surfaces for Continue —
+      // the Delete UI consults linkedLifecycle to stay DRAFT-only.
+      expect(data.drafts).toHaveLength(1);
+      expect(data.drafts[0].linkedLifecycle).toBe(status);
+    }
+  });
+
+  it("is null when the linked listing is unknown to this load", () => {
+    const data = aggregateStudioData(linkedInput("DRAFT", 999));
+    expect(data.drafts).toHaveLength(1);
+    expect(data.drafts[0].linkedLifecycle).toBeNull();
+  });
+
+  it("is null when the listings fetch failed", () => {
+    const d = draft("p1");
+    d.backendIds = { propertyId: 1, unitId: 10, listingId: 100 };
+    const data = aggregateStudioData(
+      input({
+        properties: [prop(1)],
+        unitsByProperty: { 1: [unit(10, 1)] },
+        listings: null,
+        drafts: [d],
+      })
+    );
+    expect(data.drafts).toHaveLength(1);
+    expect(data.drafts[0].linkedLifecycle).toBeNull();
+  });
+});
+
 describe("listing health attention", () => {
   it("never surfaces photo counts as attention (raw observation only)", () => {
     const data = aggregateStudioData(
