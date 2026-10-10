@@ -28,3 +28,22 @@ def test_preflight_from_allowed_origin():
     )
     assert res.status_code == 200
     assert res.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
+def test_preflight_permits_delete_draft():
+    # Regression: the owner draft-delete endpoint issues a browser
+    # preflight (Authorization + Content-Type headers); if DELETE is
+    # missing from allow_methods, the browser never sends the request
+    # and the frontend surfaces a transport error. Same gate protects
+    # the listing photo-delete endpoint.
+    res = client.options(
+        "/api/v1/owner/listings/1/draft",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "DELETE",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert res.status_code == 200
+    assert res.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "DELETE" in res.headers["access-control-allow-methods"]
