@@ -18,7 +18,8 @@ commands. Status and next steps: `docs/PROJECT_STATUS.md`.
   (localStorage only). Validate it with its own scripts; never assume
   the production build covers it.
 * `docs/` — `SYSTEM_DESIGN.md` (authority), `PROJECT_STATUS.md`,
-  `DEVELOPMENT.md`, `CONTRIBUTING.md`, `supply-strategy.md`.
+  `DEVELOPMENT.md`, `CONTRIBUTING.md`, `supply-strategy.md`,
+  `decisions/` (architectural decision records).
 
 ## Verified commands
 
@@ -36,9 +37,10 @@ They reproduce on a pristine tree and are unrelated to feature work.
 Report them as pre-existing; do not modify those files to make them
 pass.
 
-Vitest only runs files in its `include` allow-list (`lib/**` and the
-two dashboard/wizard `_components/` directories) — tests elsewhere
-are silently skipped.
+Vitest's `include` allow-list is limited to `lib/**` and the two
+dashboard/wizard `_components/` directories (`frontend/vitest.config.ts`).
+The 22 currently tracked tests all match that list; place any new test in
+one of those locations so it actually runs.
 
 ## Test isolation conventions (follow them)
 
@@ -55,7 +57,8 @@ are silently skipped.
 * One logical feature per commit; stage exact paths, never `git add .`.
 * Never commit: `.env` files, `.venv/`, `node_modules/`, `.next/`,
   `__pycache__/`, database data, `next-env.d.ts` (generated), or
-  AI/agent metadata files.
+  unreviewed AI/agent run metadata files. Tracked `AGENTS.md` itself is
+  a deliberate repository instruction file, not run metadata.
 * Never modify a committed Alembic migration — always add a new one.
 * Never push, amend, reset, clean, or stash unless explicitly asked.
 * Never claim a test, build, or browser check passed unless it actually

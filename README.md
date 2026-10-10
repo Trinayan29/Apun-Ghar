@@ -46,7 +46,8 @@ projectRent/
   backend/             # FastAPI modular monolith + Alembic + pytest
   design-prototype/    # standalone UX sandbox (own app, no backend calls)
   docs/                # SYSTEM_DESIGN.md (authority), PROJECT_STATUS.md,
-                       # DEVELOPMENT.md, CONTRIBUTING.md, supply-strategy.md
+                        # DEVELOPMENT.md, CONTRIBUTING.md, supply-strategy.md,
+                        # decisions/ (architectural decision records)
 ```
 
 The tree above is an overview of the top-level layout, not an exhaustive
@@ -55,8 +56,9 @@ used for UX iteration; it shares no code with `frontend/`.
 
 ## Quick start
 
-Prerequisites: Git, Node.js 22+, Python 3.13+, Docker Desktop. Full
-details, troubleshooting, and the Firebase emulator runbook live in
+Prerequisites: Git, Node.js, Python, Docker Desktop. The repository does
+not currently pin exact toolchain versions. Full details,
+troubleshooting, and the Firebase emulator runbook live in
 `docs/DEVELOPMENT.md`.
 
 ```powershell

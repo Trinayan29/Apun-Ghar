@@ -115,12 +115,14 @@ build`. It has no test suite.
 
 ### Last verified results (commit-scoped — re-run, don't quote blindly)
 
-* Backend at `bf8e100`: **486 passed, 15 failed** — the 15 are
-  pre-existing local-PostgreSQL data-pollution failures in
+* Backend at `bf8e100` (2026-10-08): **486 passed, 15 failed** — the 15
+  are pre-existing local-PostgreSQL data-pollution failures in
   `test_2b_models.py` (5) and `test_models.py` (10); they reproduce on a
   pristine tree and are unrelated to feature work.
-* Frontend at `bf8e100` + Your-Places work: **473 passed, 0 failed**
-  across 22 files.
+* Frontend after the Your-Places draft-deletion work: **473 passed, 0
+  failed** across 22 files. The exact commit containing that frontend
+  result was not preserved, so treat it as historical until it is
+  re-verified and re-scoped.
 
 ## Database work
 
@@ -144,8 +146,11 @@ build`. It has no test suite.
 * `next-env.d.ts` flipping between `./.next/types/` and
   `./.next/dev/types/` → generated noise from alternating `next dev`
   and `next build`; never commit it intentionally.
-* Photo endpoints returning 503 → B2 env not configured
-  (`storage_configured()` is false); expected without credentials.
-* Vitest file not running → the `include` allow-list in
-  `vitest.config.ts` covers `lib/**` and the two `_components/`
-  directories only; tests elsewhere are silently skipped.
+* Missing B2 credentials make `photos:init` and `photos:confirm`
+  return 503 (`require_storage()` is required). Photo reads (`GET`),
+  photo PATCH/DELETE, publish, pause, and draft deletion use optional
+  storage: reads degrade to `view_url: null`, while a failed storage
+  mutation returns 503 with DB rows untouched.
+* Vitest file not running → a test outside the `include` allow-list in
+  `vitest.config.ts` (`lib/**` and the two `_components/` directories)
+  will not run. The 22 currently tracked tests all match the allow-list.

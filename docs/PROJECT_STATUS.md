@@ -1,9 +1,10 @@
 # Project Status
 
 Last updated: after the owner draft-deletion feature (backend `DELETE
-/{id}/draft` + dashboard Delete, CORS `DELETE` preflight, design
-prototype owner flow). See `docs/SYSTEM_DESIGN.md` for the
-authoritative technical reference.
+/api/v1/owner/listings/{id}/draft` + dashboard Delete, CORS `DELETE`
+preflight, design prototype owner flow). Documentation claims were
+rechecked against repository commit `1b7915f` on 2026-10-10. See
+`docs/SYSTEM_DESIGN.md` for the authoritative technical reference.
 
 ## Current phase
 
@@ -27,8 +28,9 @@ sweep, single-transaction conditional unit cleanup, property never
 deleted; dashboard Delete on Continue Drafts and Your Places with
 companion local-draft purge; browser `DELETE` CORS preflight
 regression-tested). Migrations head: `0018`.
-**Design prototype owner flow: COMPLETE** (rebuilt 11-chapter listing
-UX, localStorage drafts, simulated uploads; zero backend calls).
+**Design prototype owner flow: COMPLETE** (rebuilt 11-chapter
+prototype listing UX, localStorage drafts, simulated uploads; zero
+backend calls).
 
 **Next priorities:** public `GET` search/detail endpoints; ADMIN scope
 decision; structured logging + error tracking before any production
@@ -56,9 +58,9 @@ deploy. No CI, no production hosting yet.
   Renter welcome/entry, signup/login, location-backed onboarding,
   profile; separate property-lister (owner) experience: owner signup/
   login, Owner Studio dashboard (Continue/Needs Attention/Your Places),
-  owner account page; real 11-chapter listing wizard (create + edit
-  modes) with review-changes, photo upload, publish/pause, and draft
-  deletion; ~22 test files.
+  owner account page; real 14-chapter production listing wizard (create
+  + edit modes, `frontend/lib/listing-draft.ts`) with review-changes,
+  photo upload, publish/pause, and draft deletion; 22 test files.
 * Local PostgreSQL via Docker Compose (database container only).
 * Environment flow: `.env.example` template → `backend/.env`, loaded by
   the app. No secrets in source.
@@ -388,8 +390,8 @@ Current product decision — property-lister accounts do NOT require:
   conditional unit cleanup, property never deleted); dashboard Delete
   on Continue Drafts and Your Places rows with companion local-draft
   purge; browser `DELETE` CORS preflight regression-tested.
-* Owner listing wizard: 11-chapter create + edit modes with
-  review-changes, photo upload, publish/pause, resume via local
+* Owner listing wizard: 14-chapter production create + edit modes with
+  review-changes, real photo upload, publish/pause, resume via local
   drafts; dashboard aggregates local + backend state with the backend
   lifecycle as authority.
 * Migrations `0008`–`0018` (head: `0018`, single head).
@@ -410,6 +412,8 @@ verification remains a future enhancement, not MVP authentication
 (owner phone numbers are contact data, not SMS-auth factors).
 
 ## Important architectural decisions
+
+Full accepted/superseded records: [decisions index](decisions/README.md).
 
 1. Simple monorepo (`frontend/`, `backend/`, `design-prototype/`,
    `docs/`) — no workspaces or build orchestration for a 2–4 person

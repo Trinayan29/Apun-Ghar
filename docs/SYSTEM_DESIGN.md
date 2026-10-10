@@ -40,7 +40,7 @@
 26. [Current vs future architecture](#26-current-vs-future-architecture)
 27. [Scalability](#27-scalability)
 28. [Observability](#28-observability)
-29. [Architectural decisions (ADR-style)](#29-architectural-decisions-adr-style)
+29. [Architectural decisions (ADR index)](#29-architectural-decisions-adr-index)
 30. [Risks / technical debt](#30-risks--technical-debt)
 31. [Diagram index](#31-diagram-index)
 32. [Traceability (UI → route → schema → logic → model → table)](#32-traceability)
@@ -63,13 +63,13 @@ mobile-first.
 | Actor | Description |
 |---|---|
 | Renter (`USER`) | Searches, views listings, saves, contacts, visits (search/detail/messaging are mostly planned; profiles + onboarding exist) |
-| Owner (`OWNER`) | Separate account type; creates properties → rental units → listings → pricing/photos → publishes/pauses (backend complete through Phase 2E-B) |
+| Owner (`OWNER`) | Separate account type; creates properties → rental units → listings → pricing/photos → publishes/pauses (backend complete through Phase 2G) |
 | Admin (`ADMIN`) | Role exists in the DB CHECK; **zero routes enforce or use it** (see §7) |
 | Firebase Authentication | Proves identity (ID tokens); local dev uses the Auth Emulator |
 | Production frontend (`frontend/`) | Next.js App Router web client (renter onboarding/profile + owner account flows) |
 | Backend API (`backend/`) | Single FastAPI modular monolith |
 | PostgreSQL 17 | Single relational database (Docker, host port 5433) |
-| Object storage | **Not present.** Photo records store metadata + `storage_key` only |
+| Object storage | **Integrated.** Backblaze B2 stores photo bytes; PostgreSQL stores photo metadata + `storage_key` (see §15) |
 
 **High-level architecture (CURRENT):**
 
@@ -85,7 +85,7 @@ flowchart TB
     DB[("PostgreSQL 17<br/>Docker :5433")]
     FB["Firebase Auth<br/>(emulator :9099 local)"]
 
-    FE -->|HTTPS + Bearer ID token| API
+    FE -->|HTTP(S) + Bearer ID token| API
     API -->|SQLAlchemy / psycopg| DB
     API -->|verify ID token| FB
     FE -->|sign-in / Google| FB
@@ -154,11 +154,11 @@ flowchart TB
 | `frontend/` | Production Next.js 16 + React 19 + TS + Tailwind v4 app (`rent-frontend`). Renter onboarding/profile + owner account flows |
 | `backend/` | FastAPI modular monolith (`app/`), Alembic migrations (`alembic/versions/0001–0018`), pytest suite (`tests/`), `requirements.txt` |
 | `design-prototype/` | Separate Next.js app: renter mock flows + rebuilt owner listing UX. Zero backend calls |
-| `docs/` | `PROJECT_STATUS.md`, `supply-strategy.md`, `CONTRIBUTING.md`, `DEVELOPMENT.md`, this file |
+| `docs/` | `PROJECT_STATUS.md`, `supply-strategy.md`, `CONTRIBUTING.md`, `DEVELOPMENT.md`, `decisions/`, this file |
 | `docker-compose.yml` | PostgreSQL 17 container only (`5433:5432`, `pgdata` volume) |
 | `.env.example` | Dev-only template → copied to `backend/.env`; emulator host, demo project id |
 | `firebase.json` | Auth Emulator `:9099` + UI `:4000` |
-| `README.md` | Setup guide (**stale** in places — see §30) |
+| `README.md` | Product overview and local quick start |
 
 There is **no `.github/`** (no CI), no `services/`, no `schemas/`
 package, no shared API client package, no infrastructure-as-code
@@ -170,10 +170,14 @@ beyond Compose.
 
 **Entrypoint** `backend/app/main.py`: `FastAPI(title="Rent API")`,
 CORS (`allow_origins=["http://localhost:3000"]`,
-`allow_methods=["GET","POST","PUT","PATCH"]`,
-`allow_headers=["Authorization","Content-Type"]`), seven router
-registrations, `GET /healthz` (liveness), `GET /readyz` (DB
-reachability via `SELECT 1`).
+`allow_methods=["GET","POST","PUT","PATCH","DELETE"]`,
+`allow_headers=["Authorization","Content-Type"]`, `allow_credentials=True`),
+seven router registrations, `GET /healthz` (liveness), `GET /readyz` (DB
+reachability via `SELECT 1`). The uncustomized FastAPI defaults also
+expose `/docs`, `/redoc`, and `/openapi.json`; that generated OpenAPI
+contract is the best source for raw request/response shapes. It does
+not capture role gates, ownership scoping, business guards, or the
+uniform ownership-404 rule documented below.
 
 **Module dependency graph (only modules that exist):**
 
@@ -246,7 +250,7 @@ Auth = Firebase Bearer required unless noted. No versioning beyond
 | GET | `/api/v1/users/me` | any token | **Auto-provisions** unknown Firebase uid as `USER` (+ empty profile). Syncs email/verified from claims |
 | GET | `/api/v1/users/me/profile` | `USER` | Own renter profile (404/500 shape if missing — `.one()`) |
 | PATCH | `/api/v1/users/me/profile` | `USER` | `exclude_unset` partial update; college/workplace FK type-checked; effective `budget_min ≤ budget_max`; else 422 |
-| POST | `/api/v1/owners/signup` | any token | Creates OWNER (`display_name` 2–200, `phone` `^\+?[0-9]{7,15}$`); **201 first time, 200 if already OWNER**; 409 `ACCOUNT_TYPE_CONFLICT` if the uid already has another role |
+| POST | `/api/v1/owners/signup` | any token | Creates OWNER (`display_name` 2–200, `phone_number` `^\+?[0-9]{7,15}$`); **201 first time, 200 if already OWNER**; 409 `ACCOUNT_TYPE_CONFLICT` if the uid already has another role |
 
 ### Locations (public — no auth)
 
@@ -259,10 +263,10 @@ Auth = Firebase Bearer required unless noted. No versioning beyond
 
 | Method | Path | Rules |
 |---|---|---|
-| POST | `` | Create; `address_line` stripped non-blank; lat/lng both-or-neither; area/college/workplace FK type-checked; 201 |
-| GET | `` | Owner-scoped list, `limit` 20/1–50, `offset`, `id` asc, nested locations eager |
-| GET | `/{property_id}` | `_owned_or_404` — missing **or foreign → 404** (no leak) |
-| PATCH | `/{property_id}` | `exclude_unset`; explicit null on `property_type/address_line/city` → 422; geo re-validated against merged values |
+| POST | `/api/v1/owner/properties` | Create; `address_line` stripped non-blank; lat/lng both-or-neither; area/college/workplace FK type-checked; 201 |
+| GET | `/api/v1/owner/properties` | Owner-scoped list, `limit` 20/1–50, `offset`, `id` asc, nested locations eager |
+| GET | `/api/v1/owner/properties/{property_id}` | `_owned_or_404` — missing **or foreign → 404** (no leak) |
+| PATCH | `/api/v1/owner/properties/{property_id}` | `exclude_unset`; explicit null on `property_type/address_line/city` → 422; geo re-validated against merged values |
 
 ### Owner rental units (two routers, same `OWNER` gate)
 
@@ -275,19 +279,19 @@ Auth = Firebase Bearer required unless noted. No versioning beyond
 
 | # | Method | Path | Purpose / key rule |
 |---|---|---|---|
-| 1 | POST | `` | Create; `title` required 2–200; status server-forced `DRAFT`; duplicate active listing per unit → **409** (`uq_listings_unit_active`) |
-| 2 | GET | `` | Owner-scoped join list, id asc, eager unit+amenities+prices+photos |
-| 3 | GET | `/{id}` | 404 on foreign |
-| 4 | PATCH | `/{id}` | Only `title/description/rent_basis`; `title=null` → 422; `status` not accepted; rent-basis change re-checked vs existing RENT rows |
-| 5 | POST | `/{id}/availability` | `AVAILABLE_NOW` (date must be null), `AVAILABLE_FROM_DATE` (required, not past), `OCCUPIED` (date null + rejected if `PUBLISHED`) |
-| 6 | PUT | `/{id}/price-components` | **Complete atomic replacement** (`[]` clears); full C1–C10 + `rent_basis` consistency pre-validated; duplicate identity → 409 |
-| 7 | POST | `/{id}/photos:init` | Creates `PENDING` metadata row; global `storage_key` uniqueness → 409; >15 total photos → 422 (app-level count) |
-| 8 | POST | `/{id}/photos:confirm` | Scoped `(listing_id, storage_key)` → 404 on foreign key; only `PENDING→READY`; second confirm → 422 |
-| 9 | POST | `/{id}/publish` | Guards (see §13) all pass → `PUBLISHED` + cover normalization, one commit |
-| 10 | POST | `/{id}/pause` | Only `PUBLISHED→PAUSED`; data preserved |
-| 11 | PATCH | `/{id}/photos/{photo_id}` | Reorder / change cover (`display_order`, `is_cover`) |
-| 12 | DELETE | `/{id}/photos/{photo_id}` | Deletes the photo row **and** its B2 object (fail-closed 503 on storage error) |
-| 13 | DELETE | `/{id}/draft` | Deletes a `DRAFT` listing only (else 422); cascades price/photo rows; deletes the `RentalUnit` **only when no listing of any status references it**; the `Property` is never deleted. B2 objects deleted **before** the single DB transaction |
+| 1 | POST | `/api/v1/owner/listings` | Create; `title` required 2–200; status server-forced `DRAFT`; duplicate active listing per unit → **409** (`uq_listings_unit_active`) |
+| 2 | GET | `/api/v1/owner/listings` | Owner-scoped join list, id asc, eager unit+amenities+prices+photos |
+| 3 | GET | `/api/v1/owner/listings/{id}` | 404 on foreign |
+| 4 | PATCH | `/api/v1/owner/listings/{id}` | Only `title/description/rent_basis`; `title=null` → 422; `status` not accepted; rent-basis change re-checked vs existing RENT rows |
+| 5 | POST | `/api/v1/owner/listings/{id}/availability` | `AVAILABLE_NOW` (date must be null), `AVAILABLE_FROM_DATE` (required, not past), `OCCUPIED` (date null + rejected if `PUBLISHED`) |
+| 6 | PUT | `/api/v1/owner/listings/{id}/price-components` | **Complete atomic replacement** (`[]` clears); full C1–C10 + `rent_basis` consistency pre-validated; duplicate identity → 409 |
+| 7 | POST | `/api/v1/owner/listings/{id}/photos:init` | Creates `PENDING` metadata row and issues a presigned PUT URL; server assigns the storage key; >15 total photos → 422 (app-level count); unexpected database-constraint failure → 422 |
+| 8 | POST | `/api/v1/owner/listings/{id}/photos/{photo_id}/confirm` | Scoped by `(photo_id, listing_id)` → 404 when missing or foreign; only `PENDING→READY`; second confirm → 422 |
+| 9 | POST | `/api/v1/owner/listings/{id}/publish` | Guards (see §13) all pass → `PUBLISHED` + cover normalization, one commit |
+| 10 | POST | `/api/v1/owner/listings/{id}/pause` | Only `PUBLISHED→PAUSED`; data preserved |
+| 11 | PATCH | `/api/v1/owner/listings/{id}/photos/{photo_id}` | Reorder / change cover (`display_order`, `is_cover`) |
+| 12 | DELETE | `/api/v1/owner/listings/{id}/photos/{photo_id}` | Deletes the photo row **and** its B2 object (fail-closed 503 on storage error); returns 204 |
+| 13 | DELETE | `/api/v1/owner/listings/{id}/draft` | Deletes a `DRAFT` listing only (else 422); cascades price/photo rows; deletes the `RentalUnit` **only when no listing of any status references it**; the `Property` is never deleted. B2 objects deleted **before** the single DB transaction; returns 204 |
 
 **Deliberately absent:** public listing search/detail, bookings,
 payments, admin routes, webhooks.
@@ -340,7 +344,7 @@ flowchart TB
     TOK["Valid Firebase token"] --> CUR["get_current_user<br/>DB user resolved"]
     CUR --> R{require_role}
     R -->|USER| U["/users/me/profile"]
-    R -->|OWNER| O["/owner/* (22 endpoints)"]
+    R -->|OWNER| O["/owner/* (21 endpoints)"]
     R -->|ADMIN| A["no routes"]
     R -->|other| F["403 Insufficient permissions"]
 ```
@@ -359,7 +363,7 @@ and entry-level workers share identical permissions.
 
 **Ownership checks:** every owner read/write resolves
 `resource → … → properties.owner_user_id == current_user.id`
-(listings join two hops: `listings.py:317-336`). There is **no
+(listings join two hops: `listings.py:326-345`). There is **no
 `owner_id` column** on units/listings/prices/photos — ownership is
 always derived, never trusted from payloads (create schemas carry only
 `property_id`/`rental_unit_id`, which are re-validated).
@@ -489,28 +493,28 @@ behavior:** the `ck_listings_status` CHECK also permits `RENTED` and
 `ARCHIVED`, but no endpoint reads, writes, or transitions them —
 intentionally deferred lifecycle states.
 
-`title` (2–200, API-required; DB-nullable legacy), `description`
-optional, `rent_basis` drives price-row consistency (a `RENT` row whose
-`calculation_basis` differs → 422, on both PUT and PATCH-basis-change).
-`availability_status`: `AVAILABLE_NOW` (date must be null),
-`AVAILABLE_FROM_DATE` (required, not past), `OCCUPIED` (date null,
+`title` (2–200, API-required; **NOT NULL in PostgreSQL since migration
+`0014`**), `description` optional, `rent_basis` drives price-row consistency
+(a `RENT` row whose `calculation_basis` differs → 422, on both PUT and
+PATCH-basis-change). `availability_status`: `AVAILABLE_NOW` (date must be
+null), `AVAILABLE_FROM_DATE` (required, not past), `OCCUPIED` (date null,
 forbidden while `PUBLISHED`).
 
-`DELETE /{id}/draft` is the only removal path: DRAFT-only (anything
-else → 422), storage-first B2 sweep, then one DB transaction that
-deletes the listing plus dependents and the unit only if orphaned —
-never the property (see §5 #13).
+`DELETE /api/v1/owner/listings/{id}/draft` is the only removal path:
+DRAFT-only (anything else → 422), storage-first B2 sweep, then one DB
+transaction that deletes the listing plus dependents and the unit only if
+orphaned — never the property (see §5 #13).
 
 ## 13. Publication system
 
-`POST /listings/{id}/publish` (`listings.py:829-857`) runs **all**
-guards before any mutation:
+`POST /api/v1/owner/listings/{id}/publish` (`listings.py:992-1023`) runs
+**all** guards before any mutation:
 
 - **A. Photos:** `READY` count ≥ 3 (app-level; PENDING never counts).
 - **B. Rent:** ≥ 1 `RENT` price component.
-- **C. Location:** underlying `Property` has non-blank `address_line` +
-  `city` + non-null `area_location_id` (read from DB, never the
-  payload).
+- **C. Location:** underlying `Property` has non-blank `address_line` and
+  `city`, plus either a non-null `area_location_id` or non-blank
+  `area_custom_name` (read from DB, never the payload).
 - **D. Availability:** `availability_status != OCCUPIED`.
 - **Lifecycle:** current status must be `DRAFT`/`PAUSED`.
 
@@ -600,9 +604,13 @@ Backblaze B2 S3-compatible): bytes never transit the API. `POST
 treated as success on delete (retry-safe); genuine storage failures
 raise `StorageError` → 503 with DB rows untouched (fail-closed).
 `FakeStorageService` provides the same interface in-memory for tests;
-`storage_configured()` degrades photo endpoints to 503 when B2 env is
-absent. Credentials live only in `B2_*` env vars (see `.env.example`);
-the browser only ever receives short-lived URLs.
+missing B2 credentials make `photos:init` and `photos:confirm` return
+503 through `require_storage()`. Photo reads (`GET`), photo PATCH/DELETE,
+publish, pause, and draft deletion use optional storage instead: reads
+degrade to `view_url: null`, while a storage mutation failure still
+returns 503 with DB rows untouched (fail-closed). Credentials live only
+in `B2_*` env vars (see `.env.example`); the browser only ever receives
+short-lived URLs.
 
 ---
 
@@ -644,9 +652,10 @@ check → availability validation → `INSERT status=DRAFT` → 201 full
 *entire* array (C1–C10 + basis) → duplicate scan → delete-all +
 insert-all → commit → 200 list / 422 with rollback intact.
 
-**FLOW F — Photos:** init (ownership → count ≤ 15 → key-unique →
-`PENDING`, 201) → external upload (future) → confirm (scoped lookup →
-field updates → `READY`, 200).
+**FLOW F — Photos:** init (ownership → count ≤ 15 → server-generated
+key → `PENDING`, 201) → browser PUT to the presigned URL →
+confirm (scoped `(photo_id, listing_id)` lookup → storage existence, size,
+and MIME checks → field updates → `READY`, 200).
 
 **FLOW G — Publish:** §13 diagram. Guards → normalize → commit → 200;
 any failure → 422, zero mutation.
@@ -662,10 +671,10 @@ backend phase (public search/detail) is the explicit gap.
 
 | Layer | State |
 |---|---|
-| Production backend (Phase 2E-B + hardening) | Complete: 13 listing endpoints, guards, lifecycle, atomicity; photo PATCH + DELETE; DRAFT-only `DELETE /{id}/draft` with storage-first B2 sweep |
-| `design-prototype` owner flow | Rebuilt 11-chapter guided UX (What → Kind → Where → Space → Included → Rules → Photos → Price → Move-in → Name → Listing) with conditional questions, localStorage drafts (`agh-owner-drafts-v1`), simulated uploads, blue marketplace system. **Zero API calls** (verified by repo-wide grep) |
-| Production `frontend/` owner UI | Account shell (signup/login/dashboard/account) **plus the real 11-chapter listing wizard** (`/owner/listings/new`, create + edit modes), Owner Studio sections (Continue/Needs Attention/Your Places with draft deletion), review-changes, photo upload via presigned URLs |
-| Future work | Public search/detail; real-time messaging; BHK/layout field (prototype-only concept today — needs a backend domain decision) |
+| Production backend (Phases 2E–2G + hardening) | Complete: 13 listing endpoints, guards, lifecycle, atomicity; photo PATCH + DELETE; DRAFT-only `DELETE /{id}/draft` with storage-first B2 sweep |
+| `design-prototype` owner flow | Rebuilt 11-chapter guided UX (What → Place → Where → Space → Included → Who → Photos → Price → Move-in → Name → Listing) with conditional questions, localStorage drafts (`agh-owner-drafts-v1`), simulated uploads. **Zero API calls** (verified by repo-wide grep) |
+| Production `frontend/` owner UI | Account shell (signup/login/dashboard/account) **plus the real 14-chapter listing wizard** (`/owner/listings/new`, create + edit modes), Owner Studio sections (Continue/Needs Attention/Your Places with draft deletion), review-changes, real photo upload via presigned URLs |
+| Future work | Public search/detail; real-time messaging; broader room-level layout/BHK semantics beyond the current `rental_units.layout` whole-home values (`models.py:248-252`; see open product questions in the final report) |
 
 LocalStorage draft state must never be mistaken for production
 persistence.
@@ -690,7 +699,7 @@ flowchart TB
         FB["lib/firebase.ts<br/>demo config + emulator"]
         COMP["components/<br/>auth-ui, brand,<br/>location-search, owner-ui"]
         STORE["lib/onboarding-storage.ts<br/>(localStorage draft)"]
-        WIZ["owner/listings/new<br/>11-chapter wizard + edit mode"]
+        WIZ["owner/listings/new<br/>14-chapter wizard + edit mode"]
         STUDIO["owner/dashboard<br/>Continue/Needs Attention/Your Places"]
         FLOWS["lib/ flows<br/>submit/save/edit/publish<br/>photo-upload/studio-data/draft-delete"]
     end
@@ -730,12 +739,16 @@ flowchart LR
 - **Auth header:** `Authorization: Bearer <Firebase ID token>`.
 - **Errors:** FastAPI default shape (`{"detail": string}`); `api.ts`
   surfaces `detail` or `statusText` as `ApiError.message`.
-- **Status codes:** 200/201 success (201 on first create; 200 on
-  idempotent owner re-signup); 401 bad/missing token; 403 wrong role;
-  404 uniform not-found (isolation-safe); 409 conflicts (duplicate
-  listing/component/key, account-type conflict); 422 validation
+- **Status codes:** 200 for reads/updates; 201 for created resources and
+  first-time owner signup; 200 when an existing `OWNER` repeats signup;
+  204 for successful photo and DRAFT deletions; 401 bad/missing token;
+  403 wrong role; 404 uniform not-found (isolation-safe); 409 for the
+  implemented conflicts (`uq_listings_unit_active`,
+  `uq_lpc_c10_unique`, `ACCOUNT_TYPE_CONFLICT`); 422 validation
   (Pydantic + business rules + DB CHECK violations mapped from
-  `IntegrityError` after rollback).
+  `IntegrityError` after rollback); 503 when configured photo storage is
+  unavailable, or when `photos:init`/`photos:confirm` is called without
+  B2 credentials; 500 for unhandled exceptions.
 - **Ownership errors** are always 404, never 403 — a deliberate
   information-hiding rule (see §7).
 - **PATCH semantics** (`/users/me/profile`, properties, units,
@@ -758,9 +771,10 @@ default `{"detail"}`. Strategy per layer:
 | 401 | `auth.py:37-43,45-54` | Missing/malformed/invalid Bearer token |
 | 403 | `auth.py:169-180` (`require_role`) | Authenticated but wrong role |
 | 404 | `_owned_*_or_404` helpers; scoped photo lookup | Missing **or foreign** resource (uniform message) |
-| 409 | Uniqueness violations (`uq_listings_unit_active`, `uq_lpc_c10_unique`, `storage_key`, `ACCOUNT_TYPE_CONFLICT`) | Conflict / duplicate identity |
+| 409 | Implemented conflicts (`uq_listings_unit_active`, `uq_lpc_c10_unique`, `ACCOUNT_TYPE_CONFLICT`) | Conflict / duplicate identity |
 | 422 | Pydantic validation, service guards (occupancy, C1–C10, availability, publish guards), `IntegrityError` fallback after rollback | Unprocessable input or violated business rule |
 | 500 | Unhandled (TestClient uses `raise_server_exceptions=False` in tests) | Not shaped by the app — no custom 500 handling exists |
+| 503 | Missing B2 credentials on `photos:init`/`photos:confirm`, or a failed B2 object mutation on photo/draft deletion | Storage dependency unavailable; database rows remain untouched |
 
 Validation errors from Pydantic return field-level detail lists;
 business-rule failures return single human-readable `detail` strings
@@ -769,18 +783,40 @@ business-rule failures return single human-readable `detail` strings
 ## 21. Security architecture
 
 **CURRENTLY IMPLEMENTED:** Firebase ID-token verification (Admin SDK,
-emulator-aware init); RBAC via `require_role` (USER/OWNER; ADMIN
-defined but unused); per-resource ownership joins with uniform 404s;
-`extra="forbid"` on all write schemas + `Literal` enums + range
-patterns (pincode, phone, geo); DB CHECKs as last-line defense;
-CORS allowlist (`http://localhost:3000`, methods GET/POST/PUT/PATCH,
-headers Authorization/Content-Type); secrets exclusively via env
-(`.env` git-ignored, only `.env.example` committed); test-only
-dependency override for auth (never production).
+emulator-aware init; `verify_id_token()` is called without a revocation
+option, so revocation is not checked); RBAC via `require_role`
+(`USER`/`OWNER`; `ADMIN` defined but unused); per-resource ownership
+joins with uniform 404s; `extra="forbid"` on all write schemas +
+`Literal` enums + range patterns (pincode, phone, geo); DB CHECKs as
+last-line defense; CORS browser-origin configuration
+(`http://localhost:3000`, methods GET/POST/PUT/PATCH/DELETE, headers
+Authorization/Content-Type, credentials allowed); secrets exclusively
+via env (`.env` git-ignored, only `.env.example` committed); test-only
+dependency overrides for auth (never production wiring).
 
-**PLANNED / DEFERRED (not present):** rate limiting, audit logging,
-presigned-upload auth, refresh-token rotation policy, production
-secret management, WAF/CDN policy, admin moderation tooling.
+**CORS is not authentication or authorization.** It can influence a
+browser's cross-origin behavior, but the API trusts only the verified
+Firebase bearer token and the PostgreSQL role/ownership lookup—not the
+request origin.
+
+**NOT PRESENT (verified gaps, not assumptions):** rate limiting; HTTPS
+enforcement or additional middleware; global request-size limits; token
+revocation checking; audit logging; production secret management;
+WAF/CDN policy; admin moderation tooling. The absence of a control does
+not establish that it is exploitable; these are hardening gaps to decide
+before production use.
+
+**Input bounds need review.** Most text fields have explicit Pydantic
+limits (`properties.py:43-48`, `rental_units.py:78`), but
+`listing.description` has no `max_length` (`listings.py:146`) and the
+price-component replacement endpoint accepts an unbounded list
+(`listings.py:635-638`).
+
+**Configuration risk:** the backend uses development-friendly defaults
+when variables are absent (`DATABASE_URL` in `db.py:9-12`,
+`FIREBASE_PROJECT_ID` in `auth.py:17-18`, B2 endpoint/bucket/expiry in
+`storage.py:16-24`). Those defaults help local startup, but missing
+configuration does not fail fast.
 
 ## 22. Database integrity (enforcement layers)
 
@@ -799,7 +835,7 @@ secret management, WAF/CDN policy, admin moderation tooling.
 | 15-photo maximum | Backend service only (count check; no DB CHECK) |
 | Cover selection | Backend service only (normalized at publish) |
 | FK integrity / cascades | Database (`CASCADE` down the chain, `RESTRICT` on users/amenities/locations) |
-| Required-field nullability | Mixed: DB NOT NULL + API-level guards (e.g. `title` is DB-nullable legacy, API-required) |
+| Required-field nullability | Mixed: DB NOT NULL + API-level guards (for example, `title` is NOT NULL in both PostgreSQL and the API) |
 
 ## 23. Deployment architecture
 
@@ -868,7 +904,7 @@ injected as props rather than module-mocked.
 **CURRENT:** modular monolith + single PostgreSQL + Firebase Auth;
 owner supply-side backend complete (CRUD → publish/pause/delete);
 renter profile/onboarding + owner account in production frontend;
-production 11-chapter listing wizard + Studio dashboard; B2-backed
+production 14-chapter listing wizard + Studio dashboard; B2-backed
 photo upload/confirm/view; UX sandbox disconnected; no search,
 messaging, visits, payments, uploads beyond photos, search engine,
 cache, workers, or realtime layer.
@@ -901,54 +937,45 @@ structured logging, metrics, tracing, error tracking (Sentry), alerting,
 audit logs. Say so plainly — there is no observability story beyond
 the two health endpoints.
 
-## 29. Architectural decisions (ADR-style)
+## 29. Architectural decisions (ADR index)
 
-1. **Modular monolith over microservices** — one team, one deployable,
-   domain modules with no cross-imports; services split later only on
-   scaling evidence.
-2. **PostgreSQL as the system of record** — relational integrity
-   (CHECKs, partial uniques) enforces marketplace invariants the app
-   cannot be trusted to uphold alone.
-3. **Firebase Authentication** — outsourced identity (incl. Google),
-   zero password storage; trust boundary drawn at `users.role`.
-4. **Property / RentalUnit / Listing split** — building facts, rentable
-   space, and commercial offer evolve independently (§9).
-5. **Ownership derived through Property** — no `owner_id` denormalized
-   downstream; single join-chain rule, uniform 404s.
-6. **Pricing as components, whole-set PUT** — honest totals need
-   structure; atomic replacement avoids partial-config states.
-7. **Metadata-first photos** — `storage_key` reservations decouple the
-   listing workflow from the future storage provider.
-8. **No Redis/Elasticsearch/workers** — no feature today needs them;
-   deferred explicitly, not overlooked.
-9. **Emulator-first local auth** — zero-config onboarding, no real
-   project/billing risk during development.
-10. **Prototype kept disconnected** — UX iteration at full speed with
-    zero risk to production contracts.
-11. **Email/Password + Google over phone OTP for MVP** — SMS needs a
-    paid gateway, DLT registration, and quotas; email/OAuth are free.
-    Owner phone numbers are contact data, never auth factors; the
-    architecture admits OTP later without changes.
-12. **Lazy provisioning, eager profile** — users materialize on first
-    authenticated request (no phantom rows); an empty profile row is
-    created in the same transaction so `GET /me/profile` never 404s on
-    a missing row.
-13. **Client-side route guards** — immediate redirects without full
-    reloads; server remains the only enforcer.
+The complete decision records live in [`docs/decisions/`](decisions/README.md)
+and are append-only. The table below points to them; it does not repeat
+their full context, decisions, or consequences.
+
+| ID | Decision | Status |
+|---|---|---|
+| [0001](decisions/0001-modular-monolith.md) | Modular monolith over microservices | Accepted |
+| [0002](decisions/0002-postgresql-system-of-record.md) | PostgreSQL as the system of record | Accepted |
+| [0003](decisions/0003-firebase-authentication.md) | Firebase Authentication | Accepted |
+| [0004](decisions/0004-property-unit-listing-split.md) | Property / RentalUnit / Listing split | Accepted |
+| [0005](decisions/0005-ownership-through-property.md) | Ownership derived through Property | Accepted |
+| [0006](decisions/0006-pricing-components-whole-set-put.md) | Pricing as components with whole-set replacement | Accepted |
+| [0007](decisions/0007-metadata-first-photos.md) | Metadata-first photos | Superseded by [0014](decisions/0014-b2-photo-storage.md) |
+| [0008](decisions/0008-no-premature-infrastructure.md) | No Redis, Elasticsearch, or background workers | Accepted |
+| [0009](decisions/0009-emulator-first-local-auth.md) | Emulator-first local authentication | Accepted |
+| [0010](decisions/0010-disconnected-prototype.md) | Prototype kept disconnected | Accepted |
+| [0011](decisions/0011-email-google-over-phone-otp.md) | Email/Password and Google over phone OTP for MVP | Accepted |
+| [0012](decisions/0012-lazy-provisioning-eager-profile.md) | Lazy user provisioning with an eager profile row | Accepted |
+| [0013](decisions/0013-client-route-guards.md) | Client-side route guards with server-side enforcement | Accepted |
+| [0014](decisions/0014-b2-photo-storage.md) | Backblaze B2 S3-compatible photo storage | Accepted |
 
 ## 30. Risks / technical debt
 
 | Severity | Problem | Evidence | Impact → Direction |
 |---|---|---|---|
-| HIGH | `README.md` was stale (claimed Phase 2 unstarted, 316 tests, head `0006`) | Refreshed in the docs-consolidation pass; `PROJECT_STATUS.md` reconciled, counts now commit-scoped in §25 | Resolved; keep counts scoped to avoid recurrence |
 | MEDIUM | `ADMIN` role is dead (in CHECK, zero routes) | grep: no `require_role("ADMIN")` in `app/` | Confusion + future 500s if assumed → either wire admin routes or document as reserved |
-| INFO | `Listing.title` hardened to NOT NULL in migration `0014` (zero-NULL audit) | `models.py` + `0014` guard | Resolved in Phase 2F; was a legacy weakness |
+| INFO | `Listing.title` hardened to NOT NULL in migration `0014` (zero-NULL audit) | `models.py:406`; `0014_property_enums_and_flags.py:27-39` guard | Resolved in Phase 2F; §8, §12, and §22 now agree |
 | MEDIUM | No public read API: `PUBLISHED` has no consumer | No `GET /listings` public route | Supply side is complete but unrenterable → next backend phase is public search/detail |
-| MEDIUM | Photo 15-max has a TOCTOU race (count-then-insert) | `listings.py:687-700` | Concurrent inits could exceed 15 → DB-level guard in hardening phase |
-| LOW | Broad `IntegrityError` message sniffing (photo keys) | `listings.py:726` (`"unique" in msg.lower()`) | Possible misclassification → match constraint names |
+| MEDIUM | Photo 15-max has a TOCTOU race (count-then-insert) | `init_listing_photo()` checks `len(total_photos) >= MAX_PHOTOS_PER_LISTING` before inserting (`listings.py:722-735`) | Concurrent inits could exceed 15 → DB-level guard in hardening phase |
+| MEDIUM | Production hardening controls are absent | CORS is the only middleware (`main.py:15-21`); repository grep for rate limiting, HTTPS redirection/trusted hosts, and global body-size middleware finds no controls; token verification does not request revocation (`auth.py:52`) | Correctness/security decisions must precede production deploy; absence alone does not establish exploitability |
+| LOW | Some text/array inputs have no bounds | `listing.description` has no `max_length` (`listings.py:146`); `PUT price-components` accepts an unbounded list (`listings.py:635-638`) | Large or malformed payloads can reach the database/service layers → add bounds after measuring legitimate cases |
+| LOW | `MIN_READY_PHOTOS_FOR_PUBLISH` is defined but unused | `storage.py:28` is the only repository occurrence | Publication uses a hard-coded `3` (`listings.py:961`) → import the constant or remove it |
+| LOW | Model/DDL defaults and coordinate types do not match exactly | `models.py` uses Python-side `default=` and `Float` for lat/lng (`models.py:45-46,180-181`), while migrations create several `server_default`s and `sa.Double()` columns (`0008_create_properties.py:37,42-43` and related migrations) | No observed behavioral bug, but ORM metadata is not a complete DDL source → treat migrations as DDL truth and add explicit defaults/types when behavior depends on them |
+| LOW | Missing configuration does not fail fast | `DATABASE_URL`, `FIREBASE_PROJECT_ID`, and B2 settings have development-friendly defaults (`db.py:9-12`, `auth.py:17-18`, `storage.py:16-24`) | Convenient locally, risky for production deploy → require explicit configuration outside development |
 | LOW | Business-logic deprecation warnings (`HTTP_422_UNPROCESSABLE_ENTITY`) | Test output across modules | Noise → migrate to `HTTP_422_UNPROCESSABLE_CONTENT` |
-| INFO | `RENTED`/`ARCHIVED` in status CHECK, unused | `models.py:343` | By design (deferred); keep documented, don't "clean" without a lifecycle decision |
-| INFO | `UserProfile` `.one()` raises uncaught 500-shape if profile missing | `users.py:64,76` | Auto-provisioning makes it rare; harden with 404 when touched |
+| INFO | `RENTED`/`ARCHIVED` in status CHECK, unused | `models.py:375-377` | By design (deferred); keep documented, don't "clean" without a lifecycle decision |
+| INFO | `UserProfile` `.one()` raises uncaught 500-shape if profile missing | `users.py:63-65,76` | Auto-provisioning makes it rare; harden with 404 when touched |
 
 ## 31. Diagram index
 
@@ -961,9 +988,9 @@ frontend map + request path (§§18–19), local deployment (§23).
 ## 32. Traceability
 
 **Owner creates listing:** production wizard (`/owner/listings/new`)
-→ `POST /api/v1/owner/listings` → `ListingCreate` (`listings.py:122`) →
+→ `POST /api/v1/owner/listings` → `ListingCreate` (`listings.py:142`) →
 `_owned_unit_or_404` + `_validate_availability` → `Listing`
-(`models.py:335`) → `listings` table → 201 `ListingRead`.
+(`models.py:368`) → `listings` table → 201 `ListingRead`.
 
 **Owner sets pricing:** production wizard price chapter → `PUT
 …/price-components` → `list[PriceComponentItem]` → `_validate_price_item`
@@ -986,7 +1013,7 @@ PostgreSQL 17 + Firebase Auth (emulator local); production Next.js
 client for renter onboarding/profile + owner accounts; complete owner
 supply-side backend (property → unit → listing → pricing/photos →
 publish/pause/delete, 13 listing endpoints, 21 owner endpoints total);
-production 11-chapter listing wizard + Studio dashboard with draft
+production 14-chapter listing wizard + Studio dashboard with draft
 deletion; B2-backed photo upload/confirm/view; disconnected UX
 prototype with zero API calls; no CI, no prod deploy, no
 search/detail/booking/payment infrastructure.

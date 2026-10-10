@@ -9,7 +9,7 @@ does not need.
 
 ## Local setup
 
-Follow `README.md` (sections "Prerequisites" through "Local setup").
+Follow `README.md` (`Quick start` and `Checks`).
 The short version from the repository root:
 
 ```powershell
@@ -44,11 +44,14 @@ One branch = one reviewable slice.
 
 * Small, logically separated commits (e.g. migration, then API, then UI —
   not all three in one commit).
-* Message format: `<area>: <what and why>` (e.g. `backend: add visit
-  accept endpoint with owner check`).
+* Conventional commits: `feat:` / `fix:` / `docs:` / `test:` /
+  `chore:`, short imperative scope + subject (e.g. `feat: add delete
+  draft endpoint`).
 * Never commit: `.env` files, credentials, virtual environments
   (`.venv/`), `node_modules/`, build output (`.next/`, `__pycache__/`),
-  database data, or AI/agent metadata files.
+  database data, or unreviewed AI/agent run metadata files. Tracked
+  repository instruction files such as `AGENTS.md` are intentionally
+  committed; generated agent output is not.
 
 ## Testing before a PR
 
@@ -68,6 +71,15 @@ npm run build
 
 A PR is not ready if any of these fail. New behavior should come with a
 test in the same PR.
+
+If the change touches `design-prototype/`, also run its own checks from
+that directory:
+
+```powershell
+cd design-prototype
+npm run typecheck
+npm run build
+```
 
 ## How to add a backend feature
 
