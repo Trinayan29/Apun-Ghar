@@ -1,4 +1,4 @@
-# projectRent
+# projectRent — Apun-Ghar
 
 A rental marketplace for **students and young professionals** looking for
 PGs, hostels, rooms, and flats near their college or workplace.
@@ -16,300 +16,104 @@ See `docs/supply-strategy.md` for the launch supply plan.
 
 ## Current status
 
-**Phase 0 — Foundation: COMPLETE.**
-**Phase 1 — Authentication + Profiles: COMPLETE** (Firebase
-Email/Password + Google, server-verified tokens, PostgreSQL
-provisioning, `USER`/`OWNER`/`ADMIN` roles, renter profiles).
-**Phase 3B — Renter Experience: COMPLETE** (welcome/entry,
-signup/login, location-backed onboarding, profile).
-**Phase 4A — Property-Lister Account: COMPLETE** (separate `OWNER`
-accounts with dedicated signup/login, Owner Studio dashboard, and
-account page sharing the same Firebase project; no approval/KYC/SMS
-requirements; property listing functionality not yet built).
-
-Phase 2 (marketplace: properties, listings, search) has NOT started.
-No product listing features exist yet beyond the account foundation
-described above.
+**Implemented:** Firebase Email/Password + Google auth (server-verified),
+PostgreSQL users/roles/profiles, renter onboarding + profile, separate
+`OWNER` accounts with Owner Studio, full owner supply side (properties
+→ rental units → listings → pricing/photos → publish/pause/delete),
+B2-backed photo uploads, and a disconnected UX prototype.
 
 Details: `docs/PROJECT_STATUS.md`.
+Architecture: `docs/SYSTEM_DESIGN.md`.
 Contributing: `docs/CONTRIBUTING.md`.
 
 ## Technology stack
 
-Frontend:
-
-* Next.js (App Router)
-* TypeScript
-* React
-* Tailwind CSS
-
-Backend (modular monolith):
-
-* Python
-* FastAPI
-* Pydantic
-* SQLAlchemy
-* Alembic
-
-Database:
-
-* PostgreSQL 17
-* Docker Compose for local development (database container only)
-
-Planned, not yet implemented:
-
-* Authentication: Firebase Authentication (Email/Password + Google
-  Sign-In) — planned for Phase 1. Phone OTP is explicitly deferred to a
-  future enhancement. Nothing is configured yet.
-* Object storage: S3-compatible storage for property media — planned for
-  when uploads are built. Nothing is configured yet.
+* **Frontend:** Next.js (App Router), TypeScript, React, Tailwind CSS, Vitest
+* **Backend:** Python, FastAPI, Pydantic, SQLAlchemy, Alembic, pytest
+* **Database:** PostgreSQL 17 (Docker Compose for local development)
+* **Auth:** Firebase Authentication (Email/Password + Google Sign-In)
+* **Object storage:** Backblaze B2, S3-compatible (presigned URLs; browser never sees credentials)
 
 ## Repository structure
 
 ```text
 projectRent/
   README.md            # this file — start here
+  AGENTS.md            # instructions for coding agents
   docker-compose.yml   # local PostgreSQL container (database only)
   .env.example         # template for local dev environment variables
-  .gitignore
-  frontend/            # Next.js + TypeScript + Tailwind web app
-    app/               # App Router pages (layout, home page)
-    package.json       # scripts: dev, build, start, typecheck
-  backend/             # FastAPI modular monolith
-    app/               # main.py (routes), db.py, models.py, seed.py
-    alembic/           # migrations (versions/0001_create_locations.py)
-    tests/             # backend tests
-    requirements.txt
-  docs/                # PROJECT_STATUS.md, CONTRIBUTING.md, supply-strategy.md
+  frontend/            # production Next.js + TypeScript + Tailwind web app
+  backend/             # FastAPI modular monolith + Alembic + pytest
+  design-prototype/    # standalone UX sandbox (own app, no backend calls)
+  docs/                # SYSTEM_DESIGN.md (authority), PROJECT_STATUS.md,
+                       # DEVELOPMENT.md, CONTRIBUTING.md, supply-strategy.md
 ```
 
 The tree above is an overview of the top-level layout, not an exhaustive
-file listing. Feature modules (auth, listings, search, messaging, …) will
-be introduced incrementally in their respective phases — they are
-intentionally absent now.
+file listing. `design-prototype/` is a separate Next.js app (port 3100)
+used for UX iteration; it shares no code with `frontend/`.
 
-## Prerequisites
+## Quick start
 
-Works on Windows, macOS, and Linux. You need:
-
-* Git
-* Node.js 22+ (verified with Node 22)
-* Python 3.13+ (verified with Python 3.13)
-* Docker Desktop with Docker Compose v2+ (verified with Docker 29 and
-  Compose v5)
-
-Check yours with:
-
-```powershell
-node --version
-python --version
-docker --version
-docker compose version
-```
-
-## Local setup
-
-### 1. Clone the repository
+Prerequisites: Git, Node.js 22+, Python 3.13+, Docker Desktop. Full
+details, troubleshooting, and the Firebase emulator runbook live in
+`docs/DEVELOPMENT.md`.
 
 ```powershell
 git clone <repository-url>
 cd projectRent
-```
 
-(Use the repository URL provided by the team. No remote is configured yet.)
+docker compose up -d db            # PostgreSQL on host :5433
 
-### 2. Start PostgreSQL with Docker
-
-From the repository root:
-
-```powershell
-docker compose up -d db
-docker compose ps
-```
-
-The database container listens on **host port 5433** (mapped to 5432
-inside the container). Port 5433 is deliberate: many Windows development
-machines already run a native PostgreSQL on 5432, and using 5433 lets both
-coexist. All backend defaults and `.env.example` already use 5433.
-
-#### Without Docker (not recommended)
-
-Docker is the recommended path because it gives every teammate the same
-PostgreSQL environment. If you cannot use Docker, you can still run the
-project against a locally installed PostgreSQL — PostgreSQL itself is
-still required; no other database is supported.
-
-1. Install PostgreSQL locally (use your platform's installer; a native
-   installation typically listens on port 5432 — that is fine, just
-   point the project at it instead of 5433).
-2. Create the development database and user if necessary, using the same
-   database name, user, and password the project expects (see
-   `.env.example` for the template values).
-3. Copy `.env.example` to `backend/.env`:
-
-   ```powershell
-   copy ..\.env.example .env
-   ```
-
-4. Edit `backend/.env` so `DATABASE_URL` matches your local PostgreSQL
-   installation (host, port, database, user, and password).
-5. From `backend/` with the virtual environment active, run the normal
-   project commands:
-
-   ```powershell
-   alembic upgrade head
-   python -m app.seed
-   ```
-
-6. Start the FastAPI backend normally (`uvicorn app.main:app --reload
-   --port 8000`) and confirm `/readyz` reports the database as up.
-
-The verified setup remains Docker PostgreSQL on host port 5433; use the
-steps above only when Docker is unavailable.
-
-### 3. Set up the backend virtual environment
-
-```powershell
 cd backend
 python -m venv .venv
-```
-
-Activate it (Windows PowerShell):
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-macOS/Linux:
-
-```bash
-source .venv/bin/activate
-```
-
-### 4. Install backend dependencies
-
-```powershell
+.\.venv\Scripts\Activate.ps1       # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 5. Configure environment variables
-
-```powershell
-copy ..\.env.example .env
-```
-
-macOS/Linux:
-
-```bash
-cp ../.env.example .env
-```
-
-The backend loads `backend/.env` automatically. The template already points
-at the Docker database on port 5433 — edit `DATABASE_URL` only if your
-setup differs. See "Environment variables" below.
-
-### 6. Run Alembic migrations
-
-```powershell
-alembic upgrade head
-alembic current   # should show: 0001 (head)
-```
-
-### 7. Seed the database
-
-```powershell
+copy ..\.env.example .env          # macOS/Linux: cp ../.env.example .env
+alembic upgrade head               # head: 0018
 python -m app.seed
-```
-
-This inserts starter Guwahati locations (two colleges, one area) used to
-prove the migration + query path works.
-
-### 8. Start FastAPI
-
-```powershell
 uvicorn app.main:app --reload --port 8000
 ```
-
-Verify:
-
-* `http://localhost:8000/healthz` → `{"status":"ok"}`
-* `http://localhost:8000/readyz` → `{"status":"ready","db":"up"}`
-
-### 9. Start Next.js
-
-In a second terminal, from the repository root:
 
 ```powershell
 cd frontend
 npm install
-npm run dev
+npm run dev                        # http://localhost:3000
 ```
 
-Open `http://localhost:3000` — it shows the Phase 0 placeholder page.
-(Product UI starts in later phases.)
+Verify: `http://localhost:8000/healthz` → `{"status":"ok"}`;
+`http://localhost:8000/readyz` → `{"status":"ready","db":"up"}`.
 
-### 10. Run tests / typecheck
-
-Backend (virtual environment active, from `backend/`):
+## Checks
 
 ```powershell
-pytest -q
+cd backend
+pytest -q                          # backend suite
+
+cd ../frontend
+npm run test                       # frontend suite (vitest)
+npm run typecheck                  # tsc --noEmit
+npm run build                      # production build
 ```
 
-Frontend (from `frontend/`):
+## Environment variables
 
-```powershell
-npm run typecheck
-npm run build
-```
-
-### Firebase Auth Emulator (local auth development)
-
-Apun-Ghar uses the Firebase Auth Emulator during local development —
-no real Firebase project or billing is involved. It is already
-configured in `firebase.json`. From the repository root:
-
-```powershell
-firebase emulators:start --only auth --project demo-apun-ghar
-```
-
-Auth API: `http://127.0.0.1:9099`. Emulator UI: `http://127.0.0.1:4000`.
-Stop with `Ctrl+C`. See `docs/PROJECT_STATUS.md` for status and details.
-
-## Useful commands
-
-Database (from repository root):
-
-```powershell
-docker compose up -d    # start PostgreSQL in the background
-docker compose ps       # show container status and port mapping
-docker compose down     # stop the container (data is kept in the pgdata volume)
-```
-
-Backend (from `backend/`, virtual environment active):
-
-```powershell
-alembic upgrade head    # apply migrations
-alembic current         # show applied revision
-python -m app.seed      # insert starter locations (skips if already seeded)
-pytest -q               # run backend tests
-```
-
-Frontend (from `frontend/`):
-
-```powershell
-npm run dev             # local dev server on :3000
-npm run build           # production build
-npm run start           # serve the production build
-npm run typecheck       # TypeScript check without emitting files
-```
+* `.env.example` (repository root) is committed and holds **development-only**
+  template values, including the B2 block (`B2_ENDPOINT_URL`,
+  `B2_BUCKET_NAME`, `B2_ACCESS_KEY_ID`, `B2_SECRET_ACCESS_KEY`).
+* Each teammate copies it to `backend/.env` for local runs.
+* The frontend uses `frontend/.env.example` → `.env.local`
+  (`NEXT_PUBLIC_*` only — no secrets).
+* Real `.env` files must **never** be committed (already in `.gitignore`).
+* Secrets must never be placed in source code — only in environment
+  configuration. No production credentials exist in this repository.
 
 ## Development workflow
 
 1. Pull the latest changes for your base branch.
 2. Create a feature branch for one small slice of work.
 3. Make the change (keep it small and reviewable).
-4. Run the relevant checks (`pytest -q`, `npm run typecheck`, `npm run build`).
+4. Run the relevant checks (`pytest -q`, `npm run test`, `npm run typecheck`, `npm run build`).
 5. Review your own diff before committing.
 6. Commit with a clear message describing what and why.
 7. Push the branch.
@@ -318,37 +122,13 @@ npm run typecheck       # TypeScript check without emitting files
 10. Merge after approval.
 
 Branch and commit conventions: see `docs/CONTRIBUTING.md`.
-
-## Environment variables
-
-* `.env.example` (repository root) is committed and holds **development-only**
-  template values for the local Docker database.
-* Each teammate copies it to `backend/.env` for local runs.
-* Real `.env` files must **never** be committed (already in `.gitignore`).
-* Secrets must never be placed in source code — only in environment
-  configuration. No production credentials exist in this repository.
+Test results: see `docs/DEVELOPMENT.md` (record figures scoped to a commit, never bare totals).
 
 ## Phase-based development
 
-Work lands incrementally, one phase at a time:
-
-* Phase 0 — Foundation — **COMPLETE**
-* Phase 1 — Authentication + Profiles — **COMPLETE** (Firebase Email/Password +
-  Google Sign-In, FastAPI token verification, PostgreSQL users/roles/
-  profiles; full scope in `docs/PROJECT_STATUS.md`, Phone OTP deferred)
-* Phase 3B — Renter Experience — **COMPLETE** (welcome/entry, signup/login,
-  location-backed onboarding, profile)
-* Phase 4A — Property-Lister Account — **COMPLETE** (separate `OWNER`
-  accounts, owner signup/login, Owner Studio dashboard/account; no
-  approval, KYC, or SMS requirements; listings not yet built)
-* Phase 2 — Listings
-* Phase 2 — Listings
-* Phase 3 — Search + Filters
-* Phase 4 — Property Details + Favorites + Compare
-* Phase 5 — Messaging + Visits
-* Phase 6 — Moderation + Reviews + Reports
-* Phase 7 — Roommates
-* Phase 8 — Hardening + Launch
+Work lands incrementally, one phase at a time. Current state and next
+priorities live in `docs/PROJECT_STATUS.md`; the authoritative technical
+reference is `docs/SYSTEM_DESIGN.md`.
 
 Each phase is approved before the next begins. Do not implement future
 phases early.

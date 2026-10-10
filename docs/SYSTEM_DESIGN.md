@@ -1,11 +1,9 @@
 # Apun-Ghar — System Design
 
-> Source of truth: the actual repository code (commit `c996013`,
-> "feat: add listing publication workflow"). Secondary evidence:
-> `docs/PROJECT_STATUS.md`, `docs/PROJECT_TECHNICAL_KNOWLEDGE.md`,
-> `docs/PHASE_2A_PROPERTY_LISTING_DESIGN.md`, `README.md`.
+> Source of truth: the actual repository code. Secondary evidence:
+> `docs/PROJECT_STATUS.md`, `README.md`.
 > Where the docs and the code disagree, **the code wins** — known
-> disagreements are called out explicitly (see §34).
+> disagreements are called out explicitly (see §30).
 >
 > Status words used throughout: **CURRENT** (exists in code),
 > **PROTOTYPE** (design-prototype only, not production),
@@ -154,9 +152,9 @@ flowchart TB
 | Path | Responsibility |
 |---|---|
 | `frontend/` | Production Next.js 16 + React 19 + TS + Tailwind v4 app (`rent-frontend`). Renter onboarding/profile + owner account flows |
-| `backend/` | FastAPI modular monolith (`app/`), Alembic migrations (`alembic/versions/0001–0015`), pytest suite (`tests/`, 13 files), `requirements.txt` |
+| `backend/` | FastAPI modular monolith (`app/`), Alembic migrations (`alembic/versions/0001–0018`), pytest suite (`tests/`), `requirements.txt` |
 | `design-prototype/` | Separate Next.js app: renter mock flows + rebuilt owner listing UX. Zero backend calls |
-| `docs/` | `PROJECT_STATUS.md`, `PROJECT_TECHNICAL_KNOWLEDGE.md`, `PHASE_2A_PROPERTY_LISTING_DESIGN.md`, `supply-strategy.md`, `CONTRIBUTING.md`, this file |
+| `docs/` | `PROJECT_STATUS.md`, `supply-strategy.md`, `CONTRIBUTING.md`, `DEVELOPMENT.md`, this file |
 | `docker-compose.yml` | PostgreSQL 17 container only (`5433:5432`, `pgdata` volume) |
 | `.env.example` | Dev-only template → copied to `backend/.env`; emulator host, demo project id |
 | `firebase.json` | Auth Emulator `:9099` + UI `:4000` |
@@ -221,9 +219,10 @@ handler, no unit-of-work abstraction.
 **Testing:** pytest + httpx `TestClient(raise_server_exceptions=False)`,
 per-file fixtures overriding `get_firebase_claims` with canned claims,
 module-scoped engine fixtures that **skip** when PostgreSQL is
-unreachable. 14 test files: model/migration/auth/cors/health/
-locations/owners/users/profile/2C-properties/2D-units/2E-listings/2F-domain
-(425 passed at Phase 2F).
+unreachable. 15 test files: model/migration/auth/cors/health/
+locations/owners/users/profile/2C-properties/2D-units/2E-listings/2F-domain/2H-photos
+(see §25 for commit-scoped figures; the backend suite carries 15
+pre-existing local-DB failures).
 
 ---
 
@@ -272,7 +271,7 @@ Auth = Firebase Bearer required unless noted. No versioning beyond
 - `GET /api/v1/owner/units/{unit_id}` — ownership resolved by join `unit→property→owner`; 404 on foreign.
 - `PATCH /api/v1/owner/units/{unit_id}` — `exclude_unset`; omitted `amenity_ids` **preserves** amenities; `[]` clears; failed PATCH leaves DB unchanged (validated before mutation).
 
-### Owner listings (10 endpoints, `OWNER`, prefix `/api/v1/owner/listings`)
+### Owner listings (13 endpoints, `OWNER`, prefix `/api/v1/owner/listings`)
 
 | # | Method | Path | Purpose / key rule |
 |---|---|---|---|
@@ -286,9 +285,12 @@ Auth = Firebase Bearer required unless noted. No versioning beyond
 | 8 | POST | `/{id}/photos:confirm` | Scoped `(listing_id, storage_key)` → 404 on foreign key; only `PENDING→READY`; second confirm → 422 |
 | 9 | POST | `/{id}/publish` | Guards (see §13) all pass → `PUBLISHED` + cover normalization, one commit |
 | 10 | POST | `/{id}/pause` | Only `PUBLISHED→PAUSED`; data preserved |
+| 11 | PATCH | `/{id}/photos/{photo_id}` | Reorder / change cover (`display_order`, `is_cover`) |
+| 12 | DELETE | `/{id}/photos/{photo_id}` | Deletes the photo row **and** its B2 object (fail-closed 503 on storage error) |
+| 13 | DELETE | `/{id}/draft` | Deletes a `DRAFT` listing only (else 422); cascades price/photo rows; deletes the `RentalUnit` **only when no listing of any status references it**; the `Property` is never deleted. B2 objects deleted **before** the single DB transaction |
 
 **Deliberately absent:** public listing search/detail, bookings,
-payments, uploads, admin routes, webhooks.
+payments, admin routes, webhooks.
 
 ---
 
@@ -346,8 +348,14 @@ flowchart TB
 | Role | Reachable routes | Notes |
 |---|---|---|
 | `USER` | `GET /users/me`, `GET/PATCH /users/me/profile` | Renter profile only; `OWNER`/`ADMIN` get **403** here |
-| `OWNER` | All 18 `/api/v1/owner/*` endpoints (4 properties + 4 units + 10 listings) | Plus `/users/me` (any authenticated) |
+| `OWNER` | All `/api/v1/owner/*` endpoints (4 properties + 4 units + 13 listings) | Plus `/users/me` (any authenticated) |
 | `ADMIN` | **None.** Exists only in `ck_users_role`. No route references it — dead role value, reserved for future moderation phases |
+
+`USER` means any tenant/consumer (students, interns, young
+professionals) — the role describes platform capability, not
+educational status. It was renamed from `STUDENT` (migration `0005`,
+which moves rows and switches the CHECK) precisely because students
+and entry-level workers share identical permissions.
 
 **Ownership checks:** every owner read/write resolves
 `resource → … → properties.owner_user_id == current_user.id`
@@ -365,8 +373,13 @@ not found"`), so existence is never leaked. Uniqueness conflicts →
 
 ## 8. Database system design
 
-PostgreSQL 17, migrations `0001–0015` (single linear chain), all
-tables use integer surrogate PKs.
+PostgreSQL 17, migrations `0001–0018` (single linear chain: locations
+→ users/profiles → amenities → properties → rental units → listings →
+prices/photos → unit attributes → property enums → nullable occupancy →
+property name → area custom name → photo size bytes), all tables use
+integer surrogate PKs. Column reference below is summary-level; the
+authoritative definitions live in `backend/app/models.py` and
+`backend/alembic/versions/`.
 
 ```mermaid
 erDiagram
@@ -388,12 +401,19 @@ erDiagram
 | `users` | Identity. `firebase_uid` UNIQUE, `email` UNIQUE nullable, `role ∈ {USER,OWNER,ADMIN}` CHECK, `display_name`, `phone_number`. `email_verified` synced from Firebase |
 | `user_profiles` | Renter prefs. PK = `user_id` FK CASCADE. `budget_min/max ≥ 0`, `max ≥ min` CHECKs; college/workplace FKs RESTRICT |
 | `amenities` | Catalog, 13 rows seeded in migration `0007` (slug UNIQUE, e.g. `wifi`, `power-backup`, `cctv` + label/category). `is_active` soft-kill switch; `RESTRICT` prevents deleting in-use amenities |
-| `properties` | Physical place. `owner_user_id` RESTRICT (can't delete owners with property); `property_type ∈ {PG,HOSTEL,APARTMENT_FLAT,INDEPENDENT_HOUSE,ASSAM_TYPE_HOUSE,STUDIO_BUILDING,OTHER}`; `address_line TEXT`, `city` default Guwahati, pincode, `area_location_id` + college/workplace FKs RESTRICT; `has_curfew BOOLEAN NULL` (NULL=unspecified) alongside `gate_closing_time`; lat/lng range + both-or-neither CHECKs; indexes on owner/area/(city,area) |
+| `properties` | Physical place. `owner_user_id` RESTRICT (can't delete owners with property); `name` nullable (`0016`, falls back to "Untitled property" in UI); `property_type ∈ {PG,HOSTEL,APARTMENT_FLAT,INDEPENDENT_HOUSE,ASSAM_TYPE_HOUSE,STUDIO_BUILDING,OTHER}`; `address_line TEXT`, `city` default Guwahati, pincode, `area_location_id` + `area_custom_name` (`0017`: free-text area for places missing from the catalog) + college/workplace FKs RESTRICT; `has_curfew BOOLEAN NULL` (NULL=unspecified) alongside `gate_closing_time`; lat/lng range + both-or-neither CHECKs; indexes on owner/area/(city,area) |
 | `rental_units` | Rentable space. `property_id` CASCADE; `unit_type` (6 values), `occupancy_type` (SINGLE…QUAD_PLUS, NULL = not applicable for whole homes), `capacity`/`sharing` NULLable (NULL = not applicable); `layout ∈ {1 RK,1 BHK,2 BHK,3 BHK,4 BHK+} NULL`; `is_independent BOOLEAN NULL`; `food_status ∈ {INCLUDED,SEPARATE,NONE} NULL`; `furnishing`, `gender_scope` (default ANY); **occupancy consistency triple** (NULL-tolerant at DB level; required-for-rooms enforced by API): `SINGLE ⇒ capacity=1 ∧ PRIVATE`, `SHARED ⇒ capacity≥2`, `PRIVATE ⇒ capacity=1`; plus `ck_units_layout_scope` (layout only with whole-home/OTHER types) and `ck_units_capacity_required` (capacity+sharing set, or layout set, or whole-home/OTHER type); 5 nullable tri-state policy booleans (partial indexes); `house_rules TEXT` |
 | `rental_unit_amenities` | M2M join, composite PK, index `(amenity_id, rental_unit_id)` |
 | `listings` | Commercial offer. `rental_unit_id` CASCADE; `title TEXT NOT NULL` (hardened in migration `0014` after a zero-NULL audit); `rent_basis ∈ {PER_PERSON,PER_ROOM,PER_UNIT}`; `status ∈ {DRAFT,PUBLISHED,PAUSED,RENTED,ARCHIVED}` — **RENTED/ARCHIVED exist in the CHECK but no API exposes them**; `availability_status` enum + `AVAILABLE_FROM_DATE ⇔ available_from NOT NULL` CHECK; **partial unique** `uq_listings_unit_active (rental_unit_id) WHERE status IN (DRAFT,PUBLISHED,PAUSED)` = one active listing per unit |
 | `listing_price_components` | Price rows. `listing_id` CASCADE; enums for charge/calculation/frequency/variability/timing; `amount_paise/rate_paise_per_unit BIGINT ≥ 0`; **C1–C10 CHECKs** (XOR, CONSUMPTION, DEPOSIT, RENT, ONE_TIME, periodic-FIXED, OTHER⇔label); **C10 unique** `(listing_id, charge_type, calculation_basis, billing_frequency)`; indexes on listing + flags |
-| `listing_photos` | Photo metadata. `listing_id` CASCADE; `storage_key TEXT UNIQUE` (global); `mime`, `width/height > 0`, `display_order ≥ 0`, `is_cover`, `upload_status ∈ {PENDING,READY,FAILED}`, `media_type ∈ {PHOTO,VIDEO}`; index `(listing_id, display_order)`. **No count CHECKs** (3-min/15-max are app rules) |
+| `listing_photos` | Photo metadata. `listing_id` CASCADE; `storage_key TEXT UNIQUE` (global); `mime`, `width/height > 0`, `size_bytes` (`0018`, nullable), `display_order ≥ 0`, `is_cover`, `upload_status ∈ {PENDING,READY,FAILED}`, `media_type ∈ {PHOTO,VIDEO}`; index `(listing_id, display_order)`. **No count CHECKs** (3-min/15-max are app rules) |
+
+**Key schema decisions** (stable rationale; details verified in `models.py`):
+- **Integer surrogate PKs, Firebase UID only on `users`.** 4-byte joins; the relational schema is insulated from identity-provider changes.
+- **Canonical FKs over free text** for locations and amenities — one shared row per institution/amenity, so grouping and filtering join on IDs, not strings.
+- **RESTRICT the canonical, CASCADE the offer-scoped.** `locations`, `amenities`, and `users` refuse deletion while referenced; `properties → rental_units → listings → price_components/photos` cascade, so removing an offering never orphans child rows.
+- **`users` owns identity, `properties` owns the offer tree.** Single ownership anchor `properties.owner_user_id`; no `owner_id` denormalized downstream (§7).
+- **Paise integers for money** (`BIGINT`, never float); paired-nullable patterns (`lat/lng`, `capacity/sharing`, `available_from`) enforced by CHECKs, with `NULL` always meaning "unspecified", never "zero".
 
 ---
 
@@ -415,6 +435,9 @@ can be paused/republished without touching the space (Listing);
 tenants compare on total cost, which is a structured set of charges,
 not one number (PriceComponents); media has its own upload lifecycle
 (Photos). Collapsing them would couple building facts to offer state.
+Concretely: Room 101 double @ ₹8,000/person vs Room 102 triple @
+₹6,500/person — different availability, photos, and price — cannot be
+represented honestly with `PROPERTY → LISTING` alone.
 
 ---
 
@@ -472,6 +495,11 @@ optional, `rent_basis` drives price-row consistency (a `RENT` row whose
 `availability_status`: `AVAILABLE_NOW` (date must be null),
 `AVAILABLE_FROM_DATE` (required, not past), `OCCUPIED` (date null,
 forbidden while `PUBLISHED`).
+
+`DELETE /{id}/draft` is the only removal path: DRAFT-only (anything
+else → 422), storage-first B2 sweep, then one DB transaction that
+deletes the listing plus dependents and the unit only if orphaned —
+never the property (see §5 #13).
 
 ## 13. Publication system
 
@@ -533,6 +561,16 @@ Estimated monthly cost is **not** computed server-side — the renter
 prototype sums it client-side (`PriceBreakdown`); the owner prototype
 shows headline + extras + deposit live. No tax/discount engine exists.
 
+Worked shape (same listing capable — e.g. monthly PG: RENT
+PER_PERSON MONTHLY ₹8,000 + FOOD PER_PERSON MONTHLY ₹2,000 +
+MAINTENANCE PER_UNIT MONTHLY ₹500 + DEPOSIT PER_UNIT ONE_TIME ₹8,000
+refundable). Honest-cost derivation rule: sum `amount_paise`
+converted to monthly (÷1/÷3/÷12 for MONTHLY/QUARTERLY/ANNUALLY),
+restricted to `mandatory + FIXED + periodic` rows; ONE_TIME,
+USAGE_BASED, VARIABLE, and optional rows are excluded (variable usage
+is surfaced as "+ … extra" / "starting from" language instead).
+Deposit/optional/variable never enter the headline figure.
+
 ## 15. Photo system
 
 ```mermaid
@@ -544,14 +582,27 @@ stateDiagram-v2
 ```
 
 Stored metadata: `storage_key` (globally UNIQUE), `mime`,
-`width/height`, `display_order`, `is_cover`, `upload_status`,
-`media_type`. Rules: ≤ 15 total records per listing (app count check on
-init → 422; **no DB CHECK** — documented TOCTOU note); ≥ 3 READY to
-publish; cover = lowest `(display_order, id)` among READY with explicit
-marks winning, normalized atomically at publish (PENDING marks are
-ignored and cleared). **Object storage is NOT integrated**: no SDK, no
-signed URLs, no bytes flow — `storage_key` is a reservation placeholder
-for a future R2/S3 phase.
+`width/height`, `size_bytes`, `display_order`, `is_cover`,
+`upload_status`, `media_type`. Rules: ≤ 15 total records per listing
+(app count check on init → 422; **no DB CHECK** — documented TOCTOU
+note); ≥ 3 READY to publish; cover = lowest `(display_order, id)`
+among READY with explicit marks winning, normalized atomically at
+publish (PENDING marks are ignored and cleared).
+
+**Object storage IS integrated** (`backend/app/storage.py`,
+Backblaze B2 S3-compatible): bytes never transit the API. `POST
+/photos:init` returns a short-lived presigned PUT URL (`ExpiresIn`
+900s); the browser PUTs bytes directly to the bucket; `POST
+/photos:confirm` flips `PENDING→READY` after validating size/type
+(≤ 5 MiB, `MAX_PHOTO_BYTES`). Reads use presigned view URLs
+(`ExpiresIn` 3600s) attached to READY photos. Keys are namespaced
+`listings/{listing_id}/photos/{photo_id}.{ext}`. Missing objects are
+treated as success on delete (retry-safe); genuine storage failures
+raise `StorageError` → 503 with DB rows untouched (fail-closed).
+`FakeStorageService` provides the same interface in-memory for tests;
+`storage_configured()` degrades photo endpoints to 503 when B2 env is
+absent. Credentials live only in `B2_*` env vars (see `.env.example`);
+the browser only ever receives short-lived URLs.
 
 ---
 
@@ -611,10 +662,10 @@ backend phase (public search/detail) is the explicit gap.
 
 | Layer | State |
 |---|---|
-| Production backend (Phase 2E-B) | Complete: 10 listing endpoints, guards, lifecycle, atomicity (403 tests at commit; see §25 on re-verification) |
+| Production backend (Phase 2E-B + hardening) | Complete: 13 listing endpoints, guards, lifecycle, atomicity; photo PATCH + DELETE; DRAFT-only `DELETE /{id}/draft` with storage-first B2 sweep |
 | `design-prototype` owner flow | Rebuilt 11-chapter guided UX (What → Kind → Where → Space → Included → Rules → Photos → Price → Move-in → Name → Listing) with conditional questions, localStorage drafts (`agh-owner-drafts-v1`), simulated uploads, blue marketplace system. **Zero API calls** (verified by repo-wide grep) |
-| Production `frontend/` owner UI | Account shell only (signup/login/dashboard/account pages); **no property/listing screens yet** |
-| Future work | Wire prototype UX to real APIs; public search/detail; real uploads; BHK/layout field (prototype-only concept today — needs a backend domain decision) |
+| Production `frontend/` owner UI | Account shell (signup/login/dashboard/account) **plus the real 11-chapter listing wizard** (`/owner/listings/new`, create + edit modes), Owner Studio sections (Continue/Needs Attention/Your Places with draft deletion), review-changes, photo upload via presigned URLs |
+| Future work | Public search/detail; real-time messaging; BHK/layout field (prototype-only concept today — needs a backend domain decision) |
 
 LocalStorage draft state must never be mistaken for production
 persistence.
@@ -626,8 +677,9 @@ persistence.
 Next.js 16 + React 19 + TypeScript + Tailwind v4 (`rent-frontend`).
 App Router routes: `/`, `/login`, `/signup`, `/onboarding`,
 `/profile`, `/list-your-property`, `/owner/{signup,login,dashboard,
-account}`. No search/detail/property routes in production frontend
-(those live only in the prototype).
+account}`, `/owner/listings/new` (create + edit wizard). No
+search/detail/property routes in production frontend (those live only
+in the prototype).
 
 ```mermaid
 flowchart TB
@@ -638,9 +690,15 @@ flowchart TB
         FB["lib/firebase.ts<br/>demo config + emulator"]
         COMP["components/<br/>auth-ui, brand,<br/>location-search, owner-ui"]
         STORE["lib/onboarding-storage.ts<br/>(localStorage draft)"]
+        WIZ["owner/listings/new<br/>11-chapter wizard + edit mode"]
+        STUDIO["owner/dashboard<br/>Continue/Needs Attention/Your Places"]
+        FLOWS["lib/ flows<br/>submit/save/edit/publish<br/>photo-upload/studio-data/draft-delete"]
     end
     PAGES --> AUTH & API & COMP & STORE
     API --> FB
+    WIZ --> FLOWS & STORE
+    STUDIO --> FLOWS
+    FLOWS --> API
 ```
 
 Interaction → request path: form component → `getIdToken()` from
@@ -650,7 +708,11 @@ Interaction → request path: form component → `getIdToken()` from
 `NEXT_PUBLIC_*` env, else demo/emulator defaults, so `npm run dev`
 works with zero configuration. `onboarding-storage.ts` persists the
 renter onboarding draft in localStorage (prototype-grade, same pattern
-as the design sandbox).
+as the design sandbox). Owner listing drafts persist per-uid in
+`owner-listing-drafts:{uid}` (create flow) and edit sessions in
+`owner-listing-edits:{uid}:{listingId}`; the dashboard aggregates both
+against backend inventory (`studio-data.ts`) with backend lifecycle as
+the authority for what is resumable vs attention-worthy.
 
 ---
 
@@ -676,6 +738,13 @@ flowchart LR
   `IntegrityError` after rollback).
 - **Ownership errors** are always 404, never 403 — a deliberate
   information-hiding rule (see §7).
+- **PATCH semantics** (`/users/me/profile`, properties, units,
+  listings): omitted fields are left unchanged (`exclude_unset`);
+  explicit `null` clears where the schema allows (else 422); supplied
+  values are validated in three layers — Pydantic types
+  (`extra="forbid"` rejects unknown keys) → service checks (FK
+  type-matching, e.g. a workplace id as a college → 422; effective
+  `budget_min ≤ budget_max`) → PostgreSQL CHECKs as final defense.
 
 ---
 
@@ -766,37 +835,51 @@ auto emulator connect, overridable via `NEXT_PUBLIC_*`). Health gates:
 
 Framework: **pytest** with FastAPI `TestClient`. Organization mirrors
 domains: `test_models.py` (constraint spot-checks), `test_2b_*`
-(migrations + models), `test_auth.py`, `test_cors.py`,
-`test_health.py`, `test_locations.py`, `test_owners_signup.py`,
-`test_users_me.py`, `test_users_profile.py`,
-`test_2c_properties.py` (36 tests), `test_2d_rental_units.py` (44),
-`test_2e_listings.py` (87: 56 foundation + 31 publication).
+(migrations + models), `test_auth.py`, `test_cors.py` (incl. a DELETE
+preflight regression test), `test_health.py`, `test_locations.py`,
+`test_owners_signup.py`, `test_users_me.py`, `test_users_profile.py`,
+`test_2c_properties.py`, `test_2d_rental_units.py`,
+`test_2e_listings.py` (foundation + publication + draft deletion,
+incl. a threaded same-unit concurrency test),
+`test_2f_domain.py`, `test_2h_listing_photos.py`.
 Conventions: canned Firebase claims via dependency override, per-test
 DB cleanup keyed by uid prefix (`t2c-`, `t2d-`, `t2e-`), module engine
 fixture that **skips** when PostgreSQL is unreachable, negative-path
 heavy (401/403/404/409/422 matrices), atomicity tests (failed writes
 leave DB unchanged).
 
-> Count status: at the Phase 2E-B commit the suite reported **403
-> passed, 0 failed**. During this audit PostgreSQL was unreachable
-> (port 5433 closed), so the figure could **not** be re-verified here
-> and is reported as historical, not current.
+Frontend: **vitest** (`npm run test`), Testing Library + jsdom for
+component tests; `lib/**/*.test.ts` for pure logic
+(draft/submit/save/edit/publish/photo/studio/delete flows);
+`// @vitest-environment jsdom` pragma per DOM file. API functions are
+injected as props rather than module-mocked.
+
+> Count status (commit-scoped, not absolute): at commit `bf8e100`
+> the backend suite reported **486 passed, 15 failed** — the 15 are
+> pre-existing local-PostgreSQL data-pollution failures in
+> `test_2b_models.py` (5) / `test_models.py` (10) that reproduce on a
+> pristine tree; the frontend suite reported **473 passed, 0 failed**
+> across 22 files. Re-verify with `pytest -q` / `npm run test` and
+> record the new figures here with their commit — never quote bare
+> totals.
 
 ## 26. Current vs future architecture
 
 **CURRENT:** modular monolith + single PostgreSQL + Firebase Auth;
-owner supply-side backend complete (CRUD → publish/pause); renter
-profile/onboarding + owner account in production frontend; UX
-sandbox disconnected; no search, messaging, visits, payments, uploads,
-search engine, cache, workers, or realtime layer.
+owner supply-side backend complete (CRUD → publish/pause/delete);
+renter profile/onboarding + owner account in production frontend;
+production 11-chapter listing wizard + Studio dashboard; B2-backed
+photo upload/confirm/view; UX sandbox disconnected; no search,
+messaging, visits, payments, uploads beyond photos, search engine,
+cache, workers, or realtime layer.
 
 **DEFERRED (documented, intentionally absent):** Redis, Elasticsearch/
 OpenSearch, WebSockets, background workers, microservices, Kubernetes,
 payments, video processing, KYC/admin approval, native mobile apps,
-presigned R2/S3 uploads, public search/detail endpoints. Rationale
-(per `PROJECT_STATUS.md` + code): single-digit-team stage, read/write
-patterns fit one database, premature infrastructure would add
-operational cost without a load or feature driver.
+public search/detail endpoints. Rationale (per `PROJECT_STATUS.md` +
+code): single-digit-team stage, read/write patterns fit one database,
+premature infrastructure would add operational cost without a load or
+feature driver.
 
 ## 27. Scalability
 
@@ -842,12 +925,22 @@ the two health endpoints.
    project/billing risk during development.
 10. **Prototype kept disconnected** — UX iteration at full speed with
     zero risk to production contracts.
+11. **Email/Password + Google over phone OTP for MVP** — SMS needs a
+    paid gateway, DLT registration, and quotas; email/OAuth are free.
+    Owner phone numbers are contact data, never auth factors; the
+    architecture admits OTP later without changes.
+12. **Lazy provisioning, eager profile** — users materialize on first
+    authenticated request (no phantom rows); an empty profile row is
+    created in the same transaction so `GET /me/profile` never 404s on
+    a missing row.
+13. **Client-side route guards** — immediate redirects without full
+    reloads; server remains the only enforcer.
 
 ## 30. Risks / technical debt
 
 | Severity | Problem | Evidence | Impact → Direction |
 |---|---|---|---|
-| HIGH | `README.md` is stale (claims Phase 2 unstarted, 316 tests, head `0006`) | README:30-32,44,215; actual head `0015`, phases 2C–2F committed | New joiners misled → refresh from this design doc (`PROJECT_STATUS.md` reconciled at Phase 2F) |
+| HIGH | `README.md` was stale (claimed Phase 2 unstarted, 316 tests, head `0006`) | Refreshed in the docs-consolidation pass; `PROJECT_STATUS.md` reconciled, counts now commit-scoped in §25 | Resolved; keep counts scoped to avoid recurrence |
 | MEDIUM | `ADMIN` role is dead (in CHECK, zero routes) | grep: no `require_role("ADMIN")` in `app/` | Confusion + future 500s if assumed → either wire admin routes or document as reserved |
 | INFO | `Listing.title` hardened to NOT NULL in migration `0014` (zero-NULL audit) | `models.py` + `0014` guard | Resolved in Phase 2F; was a legacy weakness |
 | MEDIUM | No public read API: `PUBLISHED` has no consumer | No `GET /listings` public route | Supply side is complete but unrenterable → next backend phase is public search/detail |
@@ -867,12 +960,12 @@ frontend map + request path (§§18–19), local deployment (§23).
 
 ## 32. Traceability
 
-**Owner creates listing:** owner wizard (PROTOTYPE, disconnected) →
-`POST /api/v1/owner/listings` → `ListingCreate` (`listings.py:122`) →
+**Owner creates listing:** production wizard (`/owner/listings/new`)
+→ `POST /api/v1/owner/listings` → `ListingCreate` (`listings.py:122`) →
 `_owned_unit_or_404` + `_validate_availability` → `Listing`
 (`models.py:335`) → `listings` table → 201 `ListingRead`.
 
-**Owner sets pricing:** price rows UI (PROTOTYPE) → `PUT
+**Owner sets pricing:** production wizard price chapter → `PUT
 …/price-components` → `list[PriceComponentItem]` → `_validate_price_item`
 (C1–C10 + basis) + duplicate scan → delete-all + insert-all →
 `listing_price_components` → 200 list / 422 rolled back.
@@ -892,29 +985,28 @@ Firebase token → `PATCH /users/me/profile` → `ProfileUpdate` →
 PostgreSQL 17 + Firebase Auth (emulator local); production Next.js
 client for renter onboarding/profile + owner accounts; complete owner
 supply-side backend (property → unit → listing → pricing/photos →
-publish/pause, 10 listing endpoints, 18 owner endpoints total);
-disconnected UX prototype with zero API calls; no CI, no prod deploy,
-no search/detail/booking/payment/upload infrastructure.
+publish/pause/delete, 13 listing endpoints, 21 owner endpoints total);
+production 11-chapter listing wizard + Studio dashboard with draft
+deletion; B2-backed photo upload/confirm/view; disconnected UX
+prototype with zero API calls; no CI, no prod deploy, no
+search/detail/booking/payment infrastructure.
 
 **CURRENT STRENGTHS:** invariants enforced at the right layers
 (DB CHECKs + service guards + Pydantic); uniform 404 isolation;
 atomic whole-set writes with rollback-tested guarantees; emulator-zero-config
 local dev; phase-disciplined git history; negative-path-heavy tests.
 
-**CURRENT LIMITATIONS:** stale README/status docs; dead ADMIN role;
-no public read path (published listings invisible); metadata-only
-photos; observability limited to two health endpoints; nullable-title
-legacy; prototype and production frontends share no components.
+**CURRENT LIMITATIONS:** dead ADMIN role;
+no public read path (published listings invisible); observability
+limited to two health endpoints; prototype and production frontends
+share no components.
 
 **NEXT ARCHITECTURAL STEPS (in order, no premature infra):**
-1. Refresh `README.md`/`PROJECT_STATUS.md` from this document.
-2. Public `GET` search/detail endpoints consuming `PUBLISHED` (+ photo
+1. Public `GET` search/detail endpoints consuming `PUBLISHED` (+ photo
    URL resolution strategy).
-3. Real uploads: presigned R2/S3 + `photos:confirm` wiring; DB-level
-   15-max guard in the same hardening migration as title NOT NULL.
-4. Decide ADMIN scope or drop the role value; add structured logging +
+2. Decide ADMIN scope or drop the role value; add structured logging +
    error tracking before any production deploy.
-5. Only then: read replicas, FTS/OpenSearch, Redis, workers — each on
+3. Only then: read replicas, FTS/OpenSearch, Redis, workers — each on
    measured need.
 
 

@@ -1,6 +1,9 @@
 # Project Status
 
-Last updated: Phase 2F (Owner Domain Extensions) completion.
+Last updated: after the owner draft-deletion feature (backend `DELETE
+/{id}/draft` + dashboard Delete, CORS `DELETE` preflight, design
+prototype owner flow). See `docs/SYSTEM_DESIGN.md` for the
+authoritative technical reference.
 
 ## Current phase
 
@@ -14,54 +17,75 @@ Last updated: Phase 2F (Owner Domain Extensions) completion.
 **Phase 2F — Owner Domain Extensions: COMPLETE** (whole-home layout,
 nullable capacity/sharing/occupancy, `ASSAM_TYPE_HOUSE`, unit
 `is_independent`, `food_status`, property `has_curfew`, title NOT NULL;
-migrations `0013`–`0015`, head: `0015`).
+migrations `0013`–`0015`).
+**Phase 2G — Listing photos with B2 storage: COMPLETE**
+(`listing_photos.size_bytes`, migration `0018`; presigned
+upload/confirm/view; photo PATCH + DELETE endpoints).
+**Owner draft deletion: COMPLETE** (backend `DELETE
+/api/v1/owner/listings/{id}/draft` — DRAFT-only, storage-first B2
+sweep, single-transaction conditional unit cleanup, property never
+deleted; dashboard Delete on Continue Drafts and Your Places with
+companion local-draft purge; browser `DELETE` CORS preflight
+regression-tested). Migrations head: `0018`.
+**Design prototype owner flow: COMPLETE** (rebuilt 11-chapter listing
+UX, localStorage drafts, simulated uploads; zero backend calls).
+
+**Next priorities:** public `GET` search/detail endpoints; ADMIN scope
+decision; structured logging + error tracking before any production
+deploy. No CI, no production hosting yet.
 
 ## Completed work
 
-* Simple monorepo: `frontend/`, `backend/`, `docs/`, plus
-  `docker-compose.yml`, `.env.example`, `README.md`, `.gitignore`.
+* Simple monorepo: `frontend/`, `backend/`, `design-prototype/`,
+  `docs/`, plus `docker-compose.yml`, `.env.example`, `README.md`,
+  `.gitignore`, `AGENTS.md`.
 * Backend: FastAPI app with `GET /healthz` (liveness) and
   `GET /readyz` (database reachability), SQLAlchemy setup, `locations`,
   `users` (+ `phone_number`), `user_profiles`, owner properties, rental
   units (+ `layout`, `is_independent`, `food_status`), listings (+ price
-  components, photos) tables, Alembic migrations `0001`–`0015` (head:
-  `0015`), seed script (Guwahati locations), 425 passing tests.
+  components, photos + `size_bytes`), Alembic migrations `0001`–`0018`
+  (head: `0018`), seed script (Guwahati locations).
 * Firebase Authentication architecture (Email/Password + Google),
   Firebase Auth Emulator for local development, server-side ID-token
   verification, on-demand user provisioning, `USER` / `OWNER` / `ADMIN`
-  role model, protected profile endpoints, CORS for the local frontend.
-* Frontend: Next.js (App Router) + TypeScript + Tailwind. Renter
-  welcome/entry, signup/login, location-backed onboarding, profile,
-  and the separate property-lister (owner) experience: owner signup/
-  login, Owner Studio dashboard, and owner account page.
+  role model, protected profile endpoints, CORS for the local frontend
+  (GET/POST/PUT/PATCH/DELETE).
+* Backblaze B2 object storage: presigned upload/confirm/view,
+  `FakeStorageService` for tests, fail-closed 503 on storage errors.
+* Frontend: Next.js (App Router) + TypeScript + Tailwind + Vitest.
+  Renter welcome/entry, signup/login, location-backed onboarding,
+  profile; separate property-lister (owner) experience: owner signup/
+  login, Owner Studio dashboard (Continue/Needs Attention/Your Places),
+  owner account page; real 11-chapter listing wizard (create + edit
+  modes) with review-changes, photo upload, publish/pause, and draft
+  deletion; ~22 test files.
 * Local PostgreSQL via Docker Compose (database container only).
 * Environment flow: `.env.example` template → `backend/.env`, loaded by
   the app. No secrets in source.
 
-## Verification results (all passing)
+## Verification results
+
+Recorded per `docs/DEVELOPMENT.md` (commit-scoped; re-verify with the
+commands there rather than quoting these figures as current):
 
 * Docker PostgreSQL container runs (`docker compose ps`: Up).
 * Database is exposed on **host port 5433** (container port 5432).
-* `alembic upgrade head` succeeds; `alembic current` shows `0015 (head)`;
-  `alembic heads` shows a single head.
+* `alembic upgrade head` succeeds; `head` is `0018` (single head).
 * `python -m app.seed` succeeds (idempotent Guwahati locations).
 * `GET /healthz` returns `{"status":"ok"}`.
 * `GET /readyz` returns `{"status":"ready","db":"up"}`.
-* `pytest -q`: 425 passed, 0 failed, 0 skipped.
-* `npm run typecheck`: clean.
-* `npm run build`: succeeds, static pages prerendered (including the
-  `/owner/*` routes).
+* `pytest -q`, `npm run test`, `npm run typecheck`, `npm run build`
+  results are recorded in `docs/DEVELOPMENT.md` with their commit.
 * Phase 4A manual verification completed against the Firebase Auth
-  Emulator + local PostgreSQL (fresh owner email signup → OWNER,
-  owner provisioning without prior USER creation, invalid-data retry,
-  existing OWNER login, USER conflict without promotion); all temporary
-  test accounts were removed from both stores afterward.
+  Emulator + local PostgreSQL; all temporary test accounts were
+  removed from both stores afterward.
 
 ## Current architecture
 
 Modular monolith (single FastAPI service, single PostgreSQL database),
-mobile-first Next.js web app. Deliberately boring: no workers, no cache
-server, no search engine, no real-time layer.
+mobile-first Next.js web app, disconnected UX prototype. Deliberately
+boring: no workers, no cache server, no search engine, no real-time
+layer.
 
 ## Phase 1 — Slice 1: local Firebase Auth Emulator (COMPLETE)
 
@@ -145,7 +169,7 @@ project unless it becomes genuinely necessary.
 * `app/users.py`: `get_or_create_current_user` (UID from verified
   claims; existing user synced for email/email_verified with
   collision-safe updates, display_name set only at creation; new user +
-   empty profile in one transaction, role `USER`; UNIQUE-race retry
+  empty profile in one transaction, role `USER`; UNIQUE-race retry
   via rollback + re-query) and `GET /api/v1/users/me` (`UserRead`
   response, no claim leakage). No profile endpoints, no role
   mutation.
@@ -320,9 +344,9 @@ Authentication project.
   owner flows never touch renter onboarding storage; authenticated
   `OWNER` visiting renter auth/onboarding/profile routes is sent to
   Owner Studio; renter profile APIs reject `OWNER` (403).
-* Owner dashboard: separate property-management mental model (identity
-  band, honest empty/coming-soon states — no fake listings, enquiries,
-  views, or revenue).
+* Owner dashboard: Owner Studio with Continue/Needs Attention/Your
+  Places sections (identity band, honest empty states — no fake
+  listings, enquiries, views, or revenue).
 * Owner account page: real identity from `/users/me`, Firebase sign-out.
 * Backend role enforcement unchanged and authoritative; `require_role`
   gating; race-safe provisioning.
@@ -339,13 +363,40 @@ Current product decision — property-lister accounts do NOT require:
 * SMS OTP
 * phone verification
 
-Owner property and rental unit APIs were implemented in Phase 2C and Phase 2D.
-that is Phase 2 work.
+## Phase 2C–2G — Owner supply side (COMPLETE)
+
+* Owner property APIs (2C): create/list/read/patch under
+  `/api/v1/owner/properties`, single-ownership anchor
+  `properties.owner_user_id`, canonical area/college/workplace
+  references, paired-coordinates rule.
+* Owner rental-unit APIs (2D): create/list/read/patch, whole-home
+  layouts, nullable capacity/sharing/occupancy for whole homes,
+  occupancy-consistency rules enforced twice (service + DB CHECKs),
+  tri-state policies, canonical amenity catalog resolution.
+* Owner listing APIs (2E): create (status server-forced DRAFT),
+  list/read, PATCH (title/description/rent-basis only), availability
+  transitions, atomic whole-set price-component replacement (C1–C10),
+  photo init/confirm, publish/pause with guards A–D.
+* Owner domain extensions (2F): `ASSAM_TYPE_HOUSE`, unit
+  `is_independent`/`food_status`, property `has_curfew`, title NOT
+  NULL, area custom-name fallback.
+* Listing photos with B2 storage (2G): presigned upload/confirm/view,
+  `size_bytes`, photo PATCH (reorder/cover) + DELETE (fail-closed
+  storage cleanup).
+* Owner draft deletion: `DELETE /api/v1/owner/listings/{id}/draft`
+  (DRAFT-only 422, storage-first B2 sweep, single-transaction
+  conditional unit cleanup, property never deleted); dashboard Delete
+  on Continue Drafts and Your Places rows with companion local-draft
+  purge; browser `DELETE` CORS preflight regression-tested.
+* Owner listing wizard: 11-chapter create + edit modes with
+  review-changes, photo upload, publish/pause, resume via local
+  drafts; dashboard aggregates local + backend state with the backend
+  lifecycle as authority.
+* Migrations `0008`–`0018` (head: `0018`, single head).
 
 ## Deferred features
 
-Everything not in Phases 0–4A: property/listing models, add-property
-workflow, photos, listing publishing, search/filters,
+Everything not listed above as COMPLETE: public marketplace search,
 details/favorites/compare, messaging, visits, moderation/reviews/
 reports, roommates, payments/booking, native video processing,
 recommendations, and all future infrastructure (Redis, Elasticsearch/
@@ -360,8 +411,9 @@ verification remains a future enhancement, not MVP authentication
 
 ## Important architectural decisions
 
-1. Simple monorepo (`frontend/`, `backend/`, `docs/`) — no workspaces or
-   build orchestration for a 2–4 person team.
+1. Simple monorepo (`frontend/`, `backend/`, `design-prototype/`,
+   `docs/`) — no workspaces or build orchestration for a 2–4 person
+   team.
 2. FastAPI + PostgreSQL is the application authority; Firebase only proves
    identity. Frontend role claims are never trusted.
 3. Two separate account types share one Firebase project: renters
@@ -386,8 +438,10 @@ verification remains a future enhancement, not MVP authentication
   user "rent"`). The compose file therefore maps the container to host
   port 5433, and all defaults use 5433. The native installation was left
   untouched.
-* Backend suite is green (125 pytest tests); frontend relies on
-  `typecheck` + production `build` plus manual emulator verification —
-  no frontend unit-test framework yet.
+* Backend suite carries 15 pre-existing local-PostgreSQL
+  data-pollution failures (`test_2b_models.py`, `test_models.py`) that
+  reproduce on a pristine tree; see `docs/DEVELOPMENT.md`.
 * No CI yet — added once the foundation is committed and stable.
-* No Git remote is configured yet.
+* `ADMIN` exists in the role CHECK but no route references it (reserved).
+* No public read API yet — `PUBLISHED` listings have no consumer.
+* Photo 15-max count-then-insert has a documented TOCTOU race.

@@ -61,6 +61,7 @@ pytest -q
 Frontend (from `frontend/`):
 
 ```powershell
+npm run test
 npm run typecheck
 npm run build
 ```
@@ -86,7 +87,7 @@ test in the same PR.
    the database directly.
 3. Validate forms on the client and handle loading, empty, and error
    states for every new screen.
-4. Run `npm run typecheck` and `npm run build`.
+4. Run `npm run test`, `npm run typecheck` and `npm run build`.
 
 ## Database migration rules
 
