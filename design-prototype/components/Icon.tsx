@@ -33,6 +33,10 @@ const paths: Record<string, React.ReactNode> = {
   eye: <><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" /><circle cx="12" cy="12" r="3" /></>,
   logout: <><path d="M14 4H6v16h8M10 12h11M18 8.5 21.5 12 18 15.5" /></>,
   gear: <><circle cx="12" cy="12" r="3" /><path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.2 5.2l2.1 2.1M16.7 16.7l2.1 2.1M18.8 5.2l-2.1 2.1M7.3 16.7l-2.1 2.1" /></>,
+  plus: <path d="M12 5v14M5 12h14" />,
+  eyeOff: <><path d="M4 4l16 16" /><path d="M10.6 5.9A9.8 9.8 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-3.3 3.9M6.6 6.6A16 16 0 0 0 2.5 12S6 18.5 12 18.5c1.1 0 2.2-.2 3.1-.6" /><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" /></>,
+  building: <><rect x="5" y="3.5" width="14" height="17" rx="1.5" /><path d="M9 7.5h2M13 7.5h2M9 11h2M13 11h2M9 14.5h2M13 14.5h2M10 20.5v-2.5h4v2.5" /></>,
+  inbox: <><path d="M3.5 13.5 6 5h12l2.5 8.5V19a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19v-5.5Z" /><path d="M3.5 13.5H9a3 3 0 0 0 6 0h5.5" /></>,
 };
 
 export default function Icon({

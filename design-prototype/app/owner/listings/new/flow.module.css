@@ -1,0 +1,30 @@
+/* Owner creation flow identity — scoped, renter UI untouched.
+   Blue marketplace system: Inter tight headings, royal-blue action. */
+
+.display {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.flow {
+  background: #f7f9fc;
+  color: #17202a;
+}
+
+/* Calm visible focus for keyboard users */
+.flow :is(a, button, input, textarea, select, summary):focus-visible {
+  outline: 2px solid #1677e8;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Thin progress hairline */
+.hairline {
+  background: #e3e8ef;
+}
+.hairline > div {
+  background: #1677e8;
+  transition: width 0.35s ease;
+}

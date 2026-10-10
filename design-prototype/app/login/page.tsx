@@ -60,6 +60,12 @@ export default function Login() {
           Create one
         </Link>
       </p>
+      <p className="mt-3 text-center text-[13.5px] text-muted">
+        Own a property?{" "}
+        <Link href="/list-your-property" className="font-bold text-brand-700 underline underline-offset-2">
+          List it on Apun-Ghar →
+        </Link>
+      </p>
     </main>
   );
 }

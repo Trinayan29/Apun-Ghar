@@ -77,16 +77,16 @@ export default function Home() {
           ))}
         </div>
 
-        <div className="mt-6 flex flex-col gap-3 rounded-2xl bg-clay-500 p-5 text-white sm:flex-row sm:items-center sm:justify-between lg:p-7">
+        <div className="mt-6 flex flex-col gap-3 rounded-xl bg-brand-800 p-5 text-white sm:flex-row sm:items-center sm:justify-between lg:p-7">
           <div>
-            <p className="text-[15.5px] font-bold lg:text-[18px]">Moving with a friend?</p>
+            <p className="text-[15.5px] font-bold tracking-tight lg:text-[18px]">Moving with a friend?</p>
             <p className="mt-1 max-w-md text-[13.5px] leading-relaxed text-white/85">
               Split a 2BHK near campus and save up to ₹3,000 each per month.
             </p>
           </div>
           <Link
             href="/search"
-            className="inline-flex min-h-[44px] shrink-0 items-center justify-center rounded-xl bg-white px-5 text-[14px] font-bold text-clay-600"
+            className="inline-flex min-h-[44px] shrink-0 items-center justify-center rounded-xl bg-white px-5 text-[14px] font-bold text-brand-700"
           >
             Explore flats
           </Link>

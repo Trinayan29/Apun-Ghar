@@ -34,6 +34,12 @@ export default function Welcome() {
                 Sign in
               </Link>
             </p>
+            <p className="mt-3 rounded-2xl border border-line bg-white px-4 py-3 text-center text-[13.5px] text-muted lg:text-left">
+              Own a property?{" "}
+              <Link href="/list-your-property" className="font-bold text-brand-700 underline underline-offset-2">
+                List it on Apun-Ghar →
+              </Link>
+            </p>
           </div>
         </div>
 

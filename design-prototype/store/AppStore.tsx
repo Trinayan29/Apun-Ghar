@@ -1,6 +1,28 @@
 "use client";
 
-import React, { createContext, useContext, useMemo, useState } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import {
+  emptyDraft,
+  type DraftStatus,
+  type ListingDraft,
+} from "@/components/listing/types";
+
+const DRAFTS_KEY = "agh-owner-drafts-v1";
+
+function loadDrafts(): ListingDraft[] {
+  try {
+    const raw = localStorage.getItem(DRAFTS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as ListingDraft[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function newId(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 export interface Filters {
   maxBudget: number | null;
@@ -51,6 +73,13 @@ interface AppState {
   resetFilters: () => void;
   onboarding: { roomType: string; place: string; budget: number | null; moveIn: string };
   setOnboarding: (o: Partial<AppState["onboarding"]>) => void;
+  owner: { name: string; email: string; phone: string } | null;
+  setOwner: (o: { name: string; email: string; phone: string } | null) => void;
+  drafts: ListingDraft[];
+  createDraft: () => string;
+  updateDraft: (id: string, patch: Partial<ListingDraft>) => void;
+  deleteDraft: (id: string) => void;
+  setDraftStatus: (id: string, status: DraftStatus) => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -72,6 +101,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     budget: null,
     moveIn: "",
   });
+  const [owner, setOwner] = useState<AppState["owner"]>(null);
+  const [drafts, setDrafts] = useState<ListingDraft[]>([]);
+  const [draftsHydrated, setDraftsHydrated] = useState(false);
+
+  useEffect(() => {
+    setDrafts(loadDrafts());
+    setDraftsHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!draftsHydrated) return;
+    try {
+      localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+    } catch {
+      // prototype storage is best-effort
+    }
+  }, [drafts, draftsHydrated]);
 
   const value = useMemo<AppState>(
     () => ({
@@ -92,8 +138,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       resetFilters: () => setFilters(DEFAULT_FILTERS),
       onboarding,
       setOnboarding: (o) => setOnboardingState((s) => ({ ...s, ...o })),
+      owner,
+      setOwner,
+      drafts,
+      createDraft: () => {
+        const d = emptyDraft(newId("draft"));
+        setDrafts((list) => [d, ...list]);
+        return d.id;
+      },
+      updateDraft: (id, patch) =>
+        setDrafts((list) =>
+          list.map((d) =>
+            d.id === id ? { ...d, ...patch, updatedAt: Date.now() } : d
+          )
+        ),
+      deleteDraft: (id) =>
+        setDrafts((list) => list.filter((d) => d.id !== id)),
+      setDraftStatus: (id, status) =>
+        setDrafts((list) =>
+          list.map((d) =>
+            d.id === id ? { ...d, status, updatedAt: Date.now() } : d
+          )
+        ),
     }),
-    [userName, anchor, savedIds, visits, filters, onboarding]
+    [userName, anchor, savedIds, visits, filters, onboarding, owner, drafts]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
