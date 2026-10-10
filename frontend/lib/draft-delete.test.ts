@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createDeleteDraftGuard,
   deleteDraftErrorMessage,
+  findLocalDraftIdByListingId,
   runDeleteDraft,
   type DeleteDraftGuard,
 } from "./draft-delete";
@@ -182,8 +183,7 @@ describe("runDeleteDraft", () => {
     expect(d.removeLocal).not.toHaveBeenCalled();
   });
 
-  it("blocks a same-tick second submission", async () => {
-    const guard: DeleteDraftGuard = createDeleteDraftGuard();
+  it("blocks a same-tick second submission", async () => {    const guard: DeleteDraftGuard = createDeleteDraftGuard();
     let resolveApi!: (v: null) => void;
     const gate = new Promise<null>((resolve) => {
       resolveApi = resolve;
@@ -248,5 +248,60 @@ describe("deleteDraftErrorMessage", () => {
     for (const outcome of outcomes) {
       expect(deleteDraftErrorMessage(outcome)).toMatch(/nothing was deleted/i);
     }
+  });
+});
+
+describe("minimal deletion targets (Your Places shape)", () => {
+  it("deletes through the backend from a listing id + lifecycle alone", async () => {
+    const d = deps();
+    const outcome = await runDeleteDraft({
+      draft: { backendIds: { listingId: 30 }, linkedLifecycle: "DRAFT" },
+      guard: d.guard,
+      deleteListing: d.deleteListing,
+      removeLocal: d.removeLocal,
+    });
+    expect(d.deleteListing).toHaveBeenCalledTimes(1);
+    expect(d.deleteListing).toHaveBeenCalledWith(30);
+    expect(outcome).toEqual({
+      type: "done",
+      result: { ok: true, localOnly: false },
+    });
+    expect(d.removeLocal).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed for a non-DRAFT minimal target without any mutation", async () => {
+    const d = deps();
+    const outcome = await runDeleteDraft({
+      draft: { backendIds: { listingId: 30 }, linkedLifecycle: "RENTED" },
+      guard: d.guard,
+      deleteListing: d.deleteListing,
+      removeLocal: d.removeLocal,
+    });
+    expect(outcome).toEqual({ type: "not-deletable" });
+    expect(d.deleteListing).not.toHaveBeenCalled();
+    expect(d.removeLocal).not.toHaveBeenCalled();
+  });
+});
+
+describe("findLocalDraftIdByListingId", () => {
+  const drafts = [
+    { draftId: "a", backendIds: { listingId: 10 } },
+    { draftId: "b", backendIds: { listingId: null } },
+    { draftId: "c", backendIds: { listingId: 30 } },
+  ];
+
+  it("finds the draft id matching the backend listing", () => {
+    expect(findLocalDraftIdByListingId(drafts, 30)).toBe("c");
+    expect(findLocalDraftIdByListingId(drafts, 10)).toBe("a");
+  });
+
+  it("returns null when no local draft links that listing", () => {
+    expect(findLocalDraftIdByListingId(drafts, 999)).toBeNull();
+    expect(findLocalDraftIdByListingId([], 30)).toBeNull();
+  });
+
+  it("never matches drafts without a backend listing", () => {
+    // A null listingId must not equal-match anything, including 0.
+    expect(findLocalDraftIdByListingId(drafts, 0)).toBeNull();
   });
 });

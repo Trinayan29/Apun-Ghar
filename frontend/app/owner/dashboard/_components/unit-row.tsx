@@ -1,5 +1,7 @@
 import { inr } from "@/lib/listing-draft";
+import type { DeleteDraftOutcome } from "@/lib/draft-delete";
 import type { StudioUnit } from "@/lib/studio-data";
+import { DeleteDraftAction } from "./delete-draft-action";
 import { ListingLifecycleAction } from "./listing-lifecycle";
 
 /**
@@ -59,16 +61,23 @@ export function UnitRow({
   unit,
   onListingChanged,
   onEditListing,
+  onDeleteListing,
 }: {
   unit: StudioUnit;
   onListingChanged: () => void;
   /** Opens the listing wizard in edit mode. Absent when there is no listing. */
   onEditListing?: (listingId: number) => void;
+  /** Deletes an unfinished DRAFT listing. Offered for DRAFT only —
+   * PUBLISHED/PAUSED/RENTED/ARCHIVED and unlisted units get no action. */
+  onDeleteListing?: (listingId: number, lifecycle: string) => Promise<DeleteDraftOutcome>;
 }) {
   const lifecycle = unit.listing
     ? (LIFECYCLE_LABELS[unit.listing.lifecycle] ?? unit.listing.lifecycle)
     : null;
   const listingId = unit.listing?.id ?? null;
+  // Backend lifecycle verbatim (not the display label): Delete is offered
+  // only for a genuinely DRAFT listing.
+  const listingLifecycle = unit.listing?.lifecycle ?? null;
   return (
     <div className="py-3 first:pt-0 last:pb-0">
       <h2
@@ -93,7 +102,7 @@ export function UnitRow({
         {unit.listing ? ` · ${rentLine(unit)}` : ""}
       </p>
       {unit.listing && listingId !== null && (
-        <div className="mt-2 flex gap-2">
+        <div className="mt-2 flex flex-wrap gap-2">
           {onEditListing && (
             <button
               type="button"
@@ -109,6 +118,16 @@ export function UnitRow({
             lifecycle={unit.listing.lifecycle}
             onChanged={onListingChanged}
           />
+          {unit.listing &&
+            listingId !== null &&
+            listingLifecycle === "DRAFT" &&
+            onDeleteListing && (
+              <DeleteDraftAction
+                presentation="inline"
+                label={unit.listing.title}
+                onDelete={() => onDeleteListing(listingId, listingLifecycle)}
+              />
+            )}
         </div>
       )}
     </div>

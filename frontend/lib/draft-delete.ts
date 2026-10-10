@@ -1,5 +1,15 @@
 import { deleteOwnerDraft } from "./api";
-import type { StudioDraft } from "./studio-data";
+
+/**
+ * Minimal deletion target. StudioDraft satisfies this shape; callers that
+ * only know a backend listing (e.g. Your Places unit rows) construct it
+ * from the listing id and lifecycle. Widened deliberately so no caller
+ * needs to fabricate a full StudioDraft.
+ */
+export interface DeletableDraftTarget {
+  backendIds: { listingId: number | null };
+  linkedLifecycle: string | null;
+}
 
 export interface DeleteDraftGuard {
   readonly active: boolean;
@@ -63,7 +73,7 @@ function messageOf(err: unknown): string {
  * this gate is UX-only.
  */
 export async function runDeleteDraft(deps: {
-  draft: StudioDraft;
+  draft: DeletableDraftTarget;
   guard: DeleteDraftGuard;
   deleteListing?: (listingId: number) => Promise<null>;
   removeLocal: () => void;
@@ -128,4 +138,18 @@ export function deleteDraftErrorMessage(
       "nothing was deleted."
     );
   return `Couldn't delete the draft: ${outcome.error} Nothing was deleted.`;
+}
+
+/**
+ * Find the local draft id whose backend listing matches, if any. Used
+ * when deleting from a surface that acts on the backend listing (Your
+ * Places): the companion local draft must be purged too, otherwise it
+ * becomes an undeletable zombie pointing at a deleted listing.
+ */
+export function findLocalDraftIdByListingId(
+  drafts: { draftId: string; backendIds: { listingId: number | null } }[],
+  listingId: number
+): string | null {
+  const match = drafts.find((d) => d.backendIds.listingId === listingId);
+  return match?.draftId ?? null;
 }

@@ -1,4 +1,5 @@
 import { BuildingIcon } from "@/components/owner-ui";
+import type { DeleteDraftOutcome } from "@/lib/draft-delete";
 import type { StudioProperty } from "@/lib/studio-data";
 import { UnitRow } from "./unit-row";
 
@@ -52,12 +53,17 @@ export function PropertyCard({
   onToggle,
   onListingChanged,
   onEditListing,
+  onDeleteListing,
 }: {
   property: StudioProperty;
   open: boolean;
   onToggle: () => void;
   onListingChanged: () => void;
   onEditListing?: (listingId: number) => void;
+  onDeleteListing?: (
+    listingId: number,
+    lifecycle: string
+  ) => Promise<DeleteDraftOutcome>;
 }) {
   const location = locationLine(property);
   const typeLabel =
@@ -110,6 +116,7 @@ export function PropertyCard({
                 unit={unit}
                 onListingChanged={onListingChanged}
                 onEditListing={onEditListing}
+                onDeleteListing={onDeleteListing}
               />
             ))}
           </div>

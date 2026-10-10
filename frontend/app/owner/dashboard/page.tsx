@@ -25,6 +25,7 @@ import {
 } from "@/lib/listing-submit-action";
 import {
   createDeleteDraftGuard,
+  findLocalDraftIdByListingId,
   runDeleteDraft,
   type DeleteDraftGuard,
   type DeleteDraftOutcome,
@@ -240,6 +241,38 @@ function Dashboard() {
     [deleteDraft, loadStudio]
   );
 
+  // Delete from Your Places: acts on the backend listing, so the input
+  // is a minimal target built from the unit row. On success the
+  // companion local draft (if any) must go too — otherwise it would
+  // linger pointing at a deleted listing, undeletable and unretryable.
+  // No match invents nothing: backend deletion still succeeds alone.
+  const handleDeleteUnitListing = useCallback(
+    async (
+      listingId: number,
+      lifecycle: string
+    ): Promise<DeleteDraftOutcome> => {
+      const outcome = await runDeleteDraft({
+        draft: { backendIds: { listingId }, linkedLifecycle: lifecycle },
+        guard: deleteGuardRef.current as DeleteDraftGuard,
+        removeLocal: () => {
+          const match = findLocalDraftIdByListingId(
+            studio?.drafts ?? [],
+            listingId
+          );
+          if (match === null) return;
+          flushSync(() => {
+            deleteDraft(match);
+          });
+        },
+      });
+      if (outcome.type === "done" && outcome.result.ok) {
+        await loadStudio();
+      }
+      return outcome;
+    },
+    [deleteDraft, loadStudio, studio]
+  );
+
   const draftTitles = useMemo(() => {
     if (!studio) return {};
     return Object.fromEntries(
@@ -347,6 +380,9 @@ function Dashboard() {
                   router.push(
                     `/owner/listings/new?mode=edit&listingId=${listingId}`
                   )
+                }
+                onDeleteListing={(listingId, lifecycle) =>
+                  handleDeleteUnitListing(listingId, lifecycle)
                 }
               />
             )}

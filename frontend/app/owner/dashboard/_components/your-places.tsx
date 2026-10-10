@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { OwnerSectionLabel } from "@/components/owner-ui";
+import type { DeleteDraftOutcome } from "@/lib/draft-delete";
 import type { StudioProperty } from "@/lib/studio-data";
 import { PropertyCard } from "./property-card";
 
@@ -14,10 +15,15 @@ export function YourPlaces({
   properties,
   onListingChanged,
   onEditListing,
+  onDeleteListing,
 }: {
   properties: StudioProperty[];
   onListingChanged: () => void;
   onEditListing?: (listingId: number) => void;
+  onDeleteListing?: (
+    listingId: number,
+    lifecycle: string
+  ) => Promise<DeleteDraftOutcome>;
 }) {
   const [openIds, setOpenIds] = useState<ReadonlySet<number> | null>(null);
   if (properties.length === 0) return null;
@@ -43,6 +49,7 @@ export function YourPlaces({
             onToggle={() => toggle(property.id)}
             onListingChanged={onListingChanged}
             onEditListing={onEditListing}
+            onDeleteListing={onDeleteListing}
           />
         ))}
       </div>
