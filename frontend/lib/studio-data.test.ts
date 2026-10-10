@@ -434,6 +434,66 @@ describe("sent-but-incomplete drafts", () => {
   });
 });
 
+describe("existing property selection is not a submission", () => {
+  function selectedExistingProperty(over: Partial<ListingDraft> = {}) {
+    const d = draft("e1");
+    d.propertySource = "existing";
+    d.backendIds = { propertyId: 1, unitId: null, listingId: null };
+    return Object.assign(d, over);
+  }
+
+  it("classifies a merely-selected existing property as a local draft", () => {
+    // No unit, no listing, no progress: picking an existing property
+    // records its id but starts no submission, so this is Continue
+    // work, not a send to retry.
+    const data = aggregateStudioData(
+      input({ drafts: [selectedExistingProperty()] })
+    );
+    expect(data.drafts).toHaveLength(1);
+    expect(data.drafts[0]).toMatchObject({
+      kind: "local",
+      remainingSteps: [],
+    });
+    expect(data.attention).toEqual([]);
+    expect(data.summary).toMatchObject({ pendingCount: 0, localDraftCount: 1 });
+  });
+
+  it("still treats a property created by this flow as a partial send", () => {
+    // Same ids but propertySource "new": the property row exists only
+    // because a send created it, so the draft stays pending.
+    const d = draft("n1");
+    d.backendIds = { propertyId: 1, unitId: null, listingId: null };
+    const data = aggregateStudioData(input({ drafts: [d] }));
+    expect(data.drafts[0]).toMatchObject({
+      kind: "pending",
+      remainingSteps: ["unit", "listing", "price", "availability"],
+    });
+    expect(data.attention).toHaveLength(1);
+    expect(data.attention[0].reason).toBe("send-incomplete");
+    expect(data.summary).toMatchObject({ pendingCount: 1, localDraftCount: 0 });
+  });
+
+  it("keeps a genuine partial send on an existing property in attention", () => {
+    // Unit created under the existing property, listing still missing:
+    // real submission progress, so Needs Attention is correct.
+    const d = selectedExistingProperty();
+    d.backendIds = { propertyId: 1, unitId: 10, listingId: null };
+    const data = aggregateStudioData(input({ drafts: [d] }));
+    expect(data.drafts[0]).toMatchObject({
+      kind: "pending",
+      remainingSteps: ["listing", "price", "availability"],
+    });
+    expect(data.attention).toHaveLength(1);
+    expect(data.attention[0]).toMatchObject({
+      reason: "send-incomplete",
+      draftId: "e1",
+      propertyId: 1,
+      unitId: 10,
+      listingId: null,
+    });
+  });
+});
+
 describe("linkedLifecycle", () => {
   function linkedInput(status: string, listingId: number) {
     const d = draft("p1");

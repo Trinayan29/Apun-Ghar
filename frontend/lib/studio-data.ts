@@ -364,12 +364,17 @@ function normalizeDraft(
     price: d.submitProgress?.price === true,
     availability: d.submitProgress?.availability === true,
   };
+  // A property id alone is not evidence of a submission attempt: it is
+  // also set locally the moment the owner picks an existing property
+  // (propertySource "existing"), before any unit/listing is created.
+  // Only a property this flow created (propertySource "new") implies a
+  // property row already exists because a send reached the backend.
   const sent =
-    backendIds.propertyId !== null ||
     backendIds.unitId !== null ||
     backendIds.listingId !== null ||
     progress.price ||
-    progress.availability;
+    progress.availability ||
+    (backendIds.propertyId !== null && d.propertySource !== "existing");
   const title = d.listing.title.trim();
   return {
     draftId: d.id,
