@@ -57,6 +57,12 @@ function HomeContent() {
             >
               View your profile
             </Link>
+            <Link
+              href="/listings"
+              className="mt-2 block h-11 w-full rounded-xl border border-line bg-white py-2.5 text-center text-[14.5px] font-semibold"
+            >
+              Browse published places
+            </Link>
           </section>
         )}
 
@@ -79,6 +85,12 @@ function HomeContent() {
             >
               Go to profile instead
             </Link>
+            <Link
+              href="/listings"
+              className="mt-2 block text-center text-[14px] font-bold text-brand-700 underline underline-offset-2"
+            >
+              Browse published places
+            </Link>
           </section>
         )}
 
@@ -95,6 +107,12 @@ function HomeContent() {
               className="mt-5 block h-12 w-full rounded-xl bg-brand-600 py-3 text-center text-[15.5px] font-bold text-white"
             >
               View your profile
+            </Link>
+            <Link
+              href="/listings"
+              className="mt-3 block h-12 w-full rounded-xl border border-line bg-white py-3 text-center text-[15px] font-semibold"
+            >
+              Browse published places
             </Link>
           </section>
         )}
@@ -133,6 +151,12 @@ function HomeContent() {
               className="flex min-h-[54px] items-center justify-center rounded-2xl bg-brand-600 text-[16px] font-bold text-white transition active:scale-[0.98]"
             >
               Get started
+            </Link>
+            <Link
+              href="/listings"
+              className="mt-3 flex min-h-[52px] items-center justify-center rounded-2xl border border-line bg-white text-[15.5px] font-bold transition active:scale-[0.98]"
+            >
+              Browse published places
             </Link>
             <p className="mt-4 text-center text-[14px] text-muted lg:text-left">
               Already have an account?{" "}

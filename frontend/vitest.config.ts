@@ -11,6 +11,8 @@ export default defineConfig({
     environment: "node",
     include: [
       "lib/**/*.test.ts",
+      "components/*.test.tsx",
+      "app/listings/**/*.test.tsx",
       "app/owner/dashboard/_components/*.test.tsx",
       "app/owner/listings/new/_components/*.test.tsx",
     ],

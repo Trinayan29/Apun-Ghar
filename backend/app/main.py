@@ -7,6 +7,7 @@ from .listings import router as listings_router
 from .locations import router as locations_router
 from .owners import router as owners_router
 from .properties import router as properties_router
+from .public_listings import router as public_listings_router
 from .rental_units import property_units_router, units_router
 from .users import router as users_router
 
@@ -26,6 +27,7 @@ app.include_router(locations_router)
 app.include_router(properties_router)
 app.include_router(property_units_router)
 app.include_router(units_router)
+app.include_router(public_listings_router)
 app.include_router(listings_router)
 
 
