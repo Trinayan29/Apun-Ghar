@@ -1,10 +1,11 @@
 "use client";
 
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BrandMark } from "@/components/brand";
+import { useOptionalAuth } from "@/components/AuthProvider";
 import { FormError } from "@/components/auth-ui";
 import ListingCard from "@/components/listing-card";
+import SiteHeader from "@/components/site-header";
 import { ApiError, type LocationItem } from "@/lib/api";
 import {
   PUBLIC_MAX_OFFSET,
@@ -15,6 +16,7 @@ import {
   type PublicPropertyType,
 } from "@/lib/public-listings";
 import { budgetPaise, parseBudgetRupees } from "@/lib/public-listing-view";
+import { isOnboardingDone } from "@/lib/onboarding-storage";
 import BrowseFilters from "./_components/browse-filters";
 
 const PAGE_SIZE = 20;
@@ -29,6 +31,10 @@ export default function PublicListingsPage({
     filters: PublicListingFilters
   ) => Promise<PublicListingSummary[]>;
 } = {}) {
+  const router = useRouter();
+  // A missing provider (tests only) reads as signed out. Production
+  // always has AuthProvider from the root layout.
+  const auth = useOptionalAuth();
   const [draftBudget, setDraftBudget] = useState("");
   const [draftPropertyType, setDraftPropertyType] = useState<
     "" | PublicPropertyType
@@ -150,17 +156,15 @@ export default function PublicListingsPage({
 
   return (
     <main className="mx-auto flex min-h-dvh w-full max-w-7xl flex-col px-5 pb-10 pt-6 lg:px-8">
-      <div className="flex items-center justify-between">
-        <Link href="/" aria-label="Apun-Ghar home">
-          <BrandMark />
-        </Link>
-        <Link
-          href="/signup"
-          className="text-[14px] font-bold text-brand-700 underline underline-offset-2"
-        >
-          Create a renter account
-        </Link>
-      </div>
+      <SiteHeader
+        loading={auth?.loading ?? false}
+        signedIn={auth?.firebaseUser != null}
+        onboardingDone={
+          auth?.firebaseUser ? isOnboardingDone(auth.firebaseUser.uid) : false
+        }
+        onSignOut={() => auth?.signOut() ?? Promise.resolve()}
+        onSignedOut={() => router.replace("/login")}
+      />
 
       <h1 className="mt-6 text-[24px] font-bold tracking-tight lg:text-[30px]">
         Browse published places

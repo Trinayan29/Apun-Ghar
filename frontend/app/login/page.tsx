@@ -10,6 +10,7 @@ import {
 import { auth, googleProvider } from "@/lib/firebase";
 import { useAuth } from "@/components/AuthProvider";
 import { isOnboardingDone } from "@/lib/onboarding-storage";
+import { postAuthDestination } from "@/lib/auth-redirect";
 import { getMe } from "@/lib/api";
 import { friendlyAuthError, isValidEmail } from "@/lib/auth-errors";
 import {
@@ -49,7 +50,10 @@ export default function LoginPage() {
       }
       if (!cancelled) {
         router.replace(
-          isOnboardingDone(firebaseUser.uid) ? "/" : "/onboarding"
+          postAuthDestination({
+            role: null,
+            onboardingDone: isOnboardingDone(firebaseUser.uid),
+          })
         );
       }
     })();
@@ -68,7 +72,9 @@ export default function LoginPage() {
     } catch {
       // Fall through to renter routing.
     }
-    router.replace(isOnboardingDone(uid) ? "/" : "/onboarding");
+    router.replace(
+      postAuthDestination({ role: null, onboardingDone: isOnboardingDone(uid) })
+    );
   };
 
   const validate = (): boolean => {

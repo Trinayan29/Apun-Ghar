@@ -1,18 +1,22 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense } from "react";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 import { useAuth } from "@/components/AuthProvider";
 import { BrandMark } from "@/components/brand";
 import { isOnboardingDone } from "@/lib/onboarding-storage";
 
 function HomeContent() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const { firebaseUser, loading, signOut } = useAuth();
-  const saved = searchParams.get("saved") === "1";
   const done = firebaseUser ? isOnboardingDone(firebaseUser.uid) : false;
+
+  // Completed, signed-in users belong in the marketplace, not on the
+  // welcome-back screen. This also covers any stale link pointing at `/`.
+  useEffect(() => {
+    if (!loading && firebaseUser && done) router.replace("/listings");
+  }, [loading, firebaseUser, done, router]);
 
   if (loading) {
     return (
@@ -39,32 +43,6 @@ function HomeContent() {
             Sign out
           </button>
         </div>
-
-        {done && saved && (
-          <section
-            aria-label="Preferences saved"
-            className="mt-6 rounded-2xl border border-brand-600 bg-brand-50 px-4 py-4"
-          >
-            <h1 className="text-[17px] font-bold">Preferences saved ✓</h1>
-            <p className="mt-1 text-[13.5px] leading-relaxed text-ink/80">
-              Thanks — we&apos;ve saved what you shared. There&apos;s no
-              listings or search experience to browse yet; we&apos;ll use your
-              preferences to show relevant places once it launches.
-            </p>
-            <Link
-              href="/profile"
-              className="mt-3 block h-11 w-full rounded-xl bg-brand-600 py-2.5 text-center text-[14.5px] font-bold text-white"
-            >
-              View your profile
-            </Link>
-            <Link
-              href="/listings"
-              className="mt-2 block h-11 w-full rounded-xl border border-line bg-white py-2.5 text-center text-[14.5px] font-semibold"
-            >
-              Browse published places
-            </Link>
-          </section>
-        )}
 
         {!done && (
           <section className="mt-6 rounded-2xl border border-line bg-white px-4 py-4">
@@ -94,27 +72,13 @@ function HomeContent() {
           </section>
         )}
 
-        {done && !saved && (
-          <section className="mt-6">
-            <h1 className="text-[24px] font-bold tracking-tight">Welcome back.</h1>
-            <p className="mt-2 text-[14px] leading-relaxed text-muted">
-              Your preferences are saved. There&apos;s no listings or search
-              experience to browse yet — we&apos;ll show relevant places here
-              once it launches.
-            </p>
-            <Link
-              href="/profile"
-              className="mt-5 block h-12 w-full rounded-xl bg-brand-600 py-3 text-center text-[15.5px] font-bold text-white"
-            >
-              View your profile
-            </Link>
-            <Link
-              href="/listings"
-              className="mt-3 block h-12 w-full rounded-xl border border-line bg-white py-3 text-center text-[15px] font-semibold"
-            >
-              Browse published places
-            </Link>
-          </section>
+        {done && (
+          <p
+            role="status"
+            className="mt-10 text-[14px] text-muted"
+          >
+            Taking you to published places…
+          </p>
         )}
       </main>
     );
@@ -217,9 +181,5 @@ function HomeContent() {
 }
 
 export default function Home() {
-  return (
-    <Suspense>
-      <HomeContent />
-    </Suspense>
-  );
+  return <HomeContent />;
 }

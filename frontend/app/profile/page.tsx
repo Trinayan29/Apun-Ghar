@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/components/AuthProvider";
+import { homeDestination } from "@/lib/auth-redirect";
+import { isOnboardingDone } from "@/lib/onboarding-storage";
 import { LocationSearchField } from "@/components/location-search";
 import {
   ApiError,
@@ -21,7 +23,15 @@ import {
   TextField,
 } from "@/components/auth-ui";
 
-export default function ProfilePage() {
+export default function ProfilePage({
+  loadMe = getMe,
+  loadProfile = getMyProfile,
+  saveProfile = patchMyProfile,
+}: {
+  loadMe?: typeof getMe;
+  loadProfile?: typeof getMyProfile;
+  saveProfile?: typeof patchMyProfile;
+} = {}) {
   const router = useRouter();
   const { firebaseUser, loading: authLoading, signOut } = useAuth();
   const [me, setMe] = useState<AppUser | null>(null);
@@ -38,7 +48,9 @@ export default function ProfilePage() {
   const [moveIn, setMoveIn] = useState("");
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
-  const [savedNote, setSavedNote] = useState("");
+  const onboardingDone = firebaseUser
+    ? isOnboardingDone(firebaseUser.uid)
+    : false;
 
   // Routing safety: /profile requires auth but NEVER redirects for
   // incomplete onboarding — it stays directly accessible.
@@ -53,13 +65,13 @@ export default function ProfilePage() {
     setLoading(true);
     setLoadError("");
     try {
-      const u = await getMe();
+      const u = await loadMe();
       // OWNER has no renter UserProfile — Owner Studio instead.
       if (u.role === "OWNER") {
         router.replace("/owner/dashboard");
         return;
       }
-      const p = await getMyProfile();
+      const p = await loadProfile();
       setMe(u);
       setProfile(p);
       setCollege(p.college_location);
@@ -74,7 +86,7 @@ export default function ProfilePage() {
     } finally {
       setLoading(false);
     }
-  }, [router]);
+  }, [router, loadMe, loadProfile]);
 
   useEffect(() => {
     if (!authLoading && firebaseUser) void load();
@@ -83,7 +95,6 @@ export default function ProfilePage() {
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError("");
-    setSavedNote("");
     const parse = (v: string): number | null => {
       if (v.trim() === "") return null;
       const n = Number(v.trim());
@@ -102,7 +113,7 @@ export default function ProfilePage() {
     if (saving) return;
     setSaving(true);
     try {
-      const updated = await patchMyProfile({
+      const updated = await saveProfile({
         college_location_id: collegeCleared ? null : college?.id,
         workplace_location_id: workplaceCleared ? null : workplace?.id,
         budget_min: min,
@@ -114,7 +125,9 @@ export default function ProfilePage() {
       setCollegeCleared(false);
       setWorkplace(updated.workplace_location);
       setWorkplaceCleared(false);
-      setSavedNote("Preferences saved.");
+      // Consistent with onboarding completion: saving preferences lands
+      // the renter in the marketplace rather than back on a home screen.
+      router.replace("/listings");
     } catch (err) {
       setFormError(
         err instanceof ApiError ? err.message : "Couldn't save. Please try again."
@@ -150,7 +163,10 @@ export default function ProfilePage() {
   return (
     <main className="mx-auto w-full max-w-sm px-6 pb-10 pt-10">
       <div className="flex items-center justify-between">
-        <Link href="/" className="text-[18px] font-bold tracking-tight">
+        <Link
+          href={homeDestination({ signedIn: firebaseUser != null, onboardingDone })}
+          className="text-[18px] font-bold tracking-tight"
+        >
           Apun-Ghar
         </Link>
         <button
@@ -235,16 +251,11 @@ export default function ProfilePage() {
           />
         </Field>
         {formError && <FormError message={formError} />}
-        {savedNote && (
-          <p role="status" className="rounded-xl bg-brand-50 px-3.5 py-3 text-[13.5px] font-medium text-brand-700">
-            {savedNote}
-          </p>
-        )}
         <SubmitButton loading={saving} label="Save preferences" loadingLabel="Saving…" />
       </form>
 
       <Link
-        href="/"
+        href="/listings"
         className="mt-6 block h-12 w-full rounded-xl border border-line bg-white py-3 text-center text-[15px] font-semibold"
       >
         Back home

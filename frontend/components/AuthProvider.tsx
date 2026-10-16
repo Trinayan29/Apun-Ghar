@@ -24,6 +24,8 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+export { AuthContext };
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -55,4 +57,13 @@ export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error("useAuth must be used inside AuthProvider");
   return ctx;
+}
+
+/**
+ * Non-throwing auth read for pages that must render with or without a
+ * provider (public pages in tests). Production always has the provider
+ * from the root layout; callers treat a missing context as signed out.
+ */
+export function useOptionalAuth(): AuthContextValue | null {
+  return useContext(AuthContext);
 }

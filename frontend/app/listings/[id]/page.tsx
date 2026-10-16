@@ -2,10 +2,13 @@
 
 import Link from "next/link";
 import { use, useCallback, useEffect, useRef, useState } from "react";
-import { BrandMark } from "@/components/brand";
+import { useRouter } from "next/navigation";
+import { useOptionalAuth } from "@/components/AuthProvider";
 import { FormError } from "@/components/auth-ui";
 import PhotoFrame from "@/components/photo-frame";
+import SiteHeader from "@/components/site-header";
 import { ApiError } from "@/lib/api";
+import { isOnboardingDone } from "@/lib/onboarding-storage";
 import { getPublicListing, parsePublicListingId, type PublicListingDetail } from "@/lib/public-listings";
 import {
   detailCoverPhoto,
@@ -59,6 +62,10 @@ export function DetailLoader({
   fetchListing?: typeof getPublicListing;
 }) {
   const listingId = parsePublicListingId(routeId);
+  const router = useRouter();
+  // A missing provider (tests only) reads as signed out. Production
+  // always has AuthProvider from the root layout.
+  const auth = useOptionalAuth();
   const [listing, setListing] = useState<PublicListingDetail | null>(null);
   const [status, setStatus] = useState<DetailStatus>(
     listingId === null ? "unavailable" : "loading"
@@ -183,17 +190,22 @@ export function DetailLoader({
   return (
     <main className="flex min-h-dvh flex-col pb-10">
       <div className="mx-auto w-full max-w-7xl px-5 pt-6 lg:px-8">
-        <div className="flex items-center justify-between">
-          <Link href="/" aria-label="Apun-Ghar home">
-            <BrandMark />
-          </Link>
+        <SiteHeader
+          loading={auth?.loading ?? false}
+          signedIn={auth?.firebaseUser != null}
+          onboardingDone={
+            auth?.firebaseUser ? isOnboardingDone(auth.firebaseUser.uid) : false
+          }
+          onSignOut={() => auth?.signOut() ?? Promise.resolve()}
+          onSignedOut={() => router.replace("/login")}
+        >
           <Link
             href="/listings"
             className="text-[14px] font-bold text-brand-700 underline underline-offset-2"
           >
             Back to browse
           </Link>
-        </div>
+        </SiteHeader>
       </div>
 
       <div className="mx-auto w-full max-w-7xl px-0 sm:px-5 lg:px-8">

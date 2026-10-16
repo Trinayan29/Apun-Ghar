@@ -7,6 +7,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import PublicListingsPage from "./page";
 import { ApiError } from "@/lib/api";
+
+// next/navigation is framework infrastructure, not an app dependency:
+// stub the router so pages render outside the app router.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn() }),
+}));
 import type {
   PublicListingFilters,
   PublicListingSummary,

@@ -13,6 +13,7 @@ export default defineConfig({
       "lib/**/*.test.ts",
       "components/*.test.tsx",
       "app/listings/**/*.test.tsx",
+      "app/profile/**/*.test.tsx",
       "app/owner/dashboard/_components/*.test.tsx",
       "app/owner/listings/new/_components/*.test.tsx",
     ],

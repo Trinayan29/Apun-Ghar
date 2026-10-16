@@ -77,9 +77,9 @@ export default function OnboardingPage() {
 
   const prefilled = useRef(false);
 
-  // Routing safety: unauthenticated -> /login; already-done -> / (one way).
+  // Routing safety: unauthenticated -> /login; already-done -> /listings.
   // OWNER accounts never run renter onboarding -> /owner/dashboard.
-  // `/` itself never auto-redirects, so this cannot loop.
+  // `/listings` itself never auto-redirects, so this cannot loop.
   useEffect(() => {
     if (authLoading) return;
     if (!firebaseUser) {
@@ -87,7 +87,7 @@ export default function OnboardingPage() {
       return;
     }
     if (isOnboardingDone(firebaseUser.uid)) {
-      router.replace("/");
+      router.replace("/listings");
       return;
     }
     let cancelled = false;
@@ -144,9 +144,10 @@ export default function OnboardingPage() {
   }, [ready, firebaseUser]);
 
   const finish = () => {
-    // Mark BEFORE navigating, per product decision.
+    // Mark BEFORE navigating, per product decision. Completed onboarding
+    // lands directly in the marketplace — no confirmation interstitial.
     if (firebaseUser) markOnboardingDone(firebaseUser.uid);
-    router.replace("/?saved=1");
+    router.replace("/listings");
   };
 
   const goStep = (n: number) => {

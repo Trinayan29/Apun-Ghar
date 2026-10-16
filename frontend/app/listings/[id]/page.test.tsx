@@ -9,6 +9,12 @@ import { DetailLoader } from "./page";
 import { ApiError } from "@/lib/api";
 import type { PublicListingDetail } from "@/lib/public-listings";
 
+// next/navigation is framework infrastructure, not an app dependency:
+// stub the router so pages render outside the app router.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn() }),
+}));
+
 afterEach(() => {
   cleanup();
 });
