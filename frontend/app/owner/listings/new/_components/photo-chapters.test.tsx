@@ -239,6 +239,216 @@ describe("PhotosChapter uploads", () => {
   });
 });
 
+describe("PhotosChapter ensure-failure honesty", () => {
+  type EnsureResult =
+    | { ok: true; listingId: number }
+    | { ok: false; message: string };
+
+  /** Harness with no backend listing yet, so onEnsureListing is exercised. */
+  function EnsureHarness({
+    backendOps,
+    ensure,
+    storeRef,
+  }: {
+    backendOps: PhotoBackendOps;
+    ensure: () => Promise<EnsureResult>;
+    storeRef: { current: Map<string, File> | null };
+  }) {
+    const [photos, setPhotos] = useState<PhotoDraft[]>([]);
+    const [store] = useState(() => new Map<string, File>());
+    storeRef.current = store;
+    return (
+      <PhotosChapter
+        photos={photos}
+        onPhotos={setPhotos}
+        error={null}
+        listingId={null}
+        onEnsureListing={ensure}
+        photoOps={backendOps}
+        fileStore={store}
+      />
+    );
+  }
+
+  it("surfaces the real blocker and never leaves a silent local tile", async () => {
+    const backendOps = ops();
+    const ensure = vi.fn(async () => ({
+      ok: false as const,
+      message: "Already saving — try again in a moment.",
+    }));
+    const storeRef = { current: null as Map<string, File> | null };
+    const { container } = render(
+      <EnsureHarness
+        backendOps={backendOps}
+        ensure={ensure}
+        storeRef={storeRef}
+      />
+    );
+    fireEvent.change(fileInput(container), {
+      target: { files: [photoFile()] },
+    });
+
+    // The actual blocker is surfaced, not a generic upload failure.
+    await screen.findByText("Already saving — try again in a moment.");
+    // There was no listing to upload to, so nothing was sent.
+    expect(backendOps.upload).not.toHaveBeenCalled();
+    // The pick is visibly failed (retry offered), never an apparently
+    // accepted photo.
+    expect(screen.getByRole("button", { name: "Failed — retry" })).toBeDefined();
+    expect(screen.queryByText("Not uploaded yet")).toBeNull();
+    expect(screen.queryByText("Ready ✓")).toBeNull();
+    expect(container.textContent).toContain("0 of 3 required photos ready");
+  });
+
+  it("keeps the original bytes so retry can upload after the failure", async () => {
+    const backendOps = ops();
+    let attempt = 0;
+    const ensure = vi.fn(async (): Promise<EnsureResult> => {
+      attempt += 1;
+      return attempt === 1
+        ? { ok: false, message: "Couldn't save the draft — try again." }
+        : { ok: true, listingId: 77 };
+    });
+    const storeRef = { current: null as Map<string, File> | null };
+    const { container } = render(
+      <EnsureHarness
+        backendOps={backendOps}
+        ensure={ensure}
+        storeRef={storeRef}
+      />
+    );
+    fireEvent.change(fileInput(container), {
+      target: { files: [photoFile("room.jpg")] },
+    });
+
+    await screen.findByRole("button", { name: "Failed — retry" });
+    // The owner's pick is retained rather than discarded with the failure.
+    expect(storeRef.current?.size).toBe(1);
+    expect([...(storeRef.current?.values() ?? [])][0].name).toBe("room.jpg");
+
+    fireEvent.click(screen.getByRole("button", { name: "Failed — retry" }));
+    await screen.findByText("Ready ✓");
+    expect(ensure).toHaveBeenCalledTimes(2);
+    expect(backendOps.upload).toHaveBeenCalledWith(
+      77,
+      expect.anything(),
+      "image/jpeg",
+      expect.objectContaining({ displayOrder: 0, isCover: true })
+    );
+  });
+
+  it("labels a not-yet-uploaded tile instead of showing a bare thumbnail", () => {
+    render(
+      <PhotosChapter
+        photos={[
+          tile({
+            id: "l1",
+            status: "local",
+            src: "data:image/jpeg;base64,AAA",
+            order: 0,
+            cover: true,
+          }),
+        ]}
+        onPhotos={() => {}}
+        error={null}
+        listingId={42}
+        onEnsureListing={async () => ({ ok: true, listingId: 42 })}
+        photoOps={ops()}
+        fileStore={new Map<string, File>()}
+      />
+    );
+    expect(screen.getByText("Not uploaded yet")).toBeDefined();
+    // Never mistaken for an uploaded photo.
+    expect(screen.queryByText("Ready ✓")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Failed — retry" })).toBeNull();
+  });
+
+  it("shows the same honest label in readOnly edit mode", () => {
+    render(
+      <PhotosChapter
+        photos={[tile({ id: "l1", status: "local", order: 0, cover: true })]}
+        onPhotos={() => {}}
+        error={null}
+        listingId={42}
+        onEnsureListing={async () => ({ ok: true, listingId: 42 })}
+        photoOps={ops()}
+        fileStore={new Map<string, File>()}
+        readOnly
+      />
+    );
+    // Display only: still no upload control in edit mode.
+    expect(screen.getByText("Not uploaded yet")).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Failed — retry" })).toBeNull();
+  });
+
+  it("says how many picked photos did not fit instead of dropping them silently", async () => {
+    const backendOps = ops();
+    const { container } = render(
+      <PhotoHarness
+        initial={[
+          tile({ id: "f0", status: "ready", order: 0, cover: true, backendId: 100 }),
+        ]}
+        backendOps={backendOps}
+        listingId={42}
+      />
+    );
+    // 14 free slots, 16 files picked: two selections cannot be kept.
+    fireEvent.change(fileInput(container), {
+      target: {
+        files: Array.from({ length: 16 }, (_, i) =>
+          photoFile(`pick-${i}.jpg`)
+        ),
+      },
+    });
+    await screen.findByText(
+      /Only 14 photos could be added — 2 more didn't fit/
+    );
+    // Nothing was discarded silently: exactly the fitting tiles were added.
+    expect(backendOps.upload).toHaveBeenCalledTimes(14);
+    expect(container.textContent).toContain("15/15");
+  });
+
+  it("counts failed and stranded tiles toward the cap without deleting any", () => {
+    const backendOps = ops();
+    const onPhotos = vi.fn();
+    const stranded = Array.from({ length: 15 }, (_, i) =>
+      tile({
+        id: `s-${i}`,
+        status: i < 10 ? "local" : "failed",
+        error: i < 10 ? null : "boom",
+        order: i,
+        cover: i === 0,
+      })
+    );
+    const { container } = render(
+      <PhotosChapter
+        photos={stranded}
+        onPhotos={onPhotos}
+        error={null}
+        listingId={42}
+        onEnsureListing={async () => ({ ok: true, listingId: 42 })}
+        photoOps={backendOps}
+        fileStore={new Map<string, File>()}
+      />
+    );
+    expect(container.textContent).toContain("15/15");
+    // At the cap the picker is replaced by an explicit reason.
+    expect(container.querySelector('input[type="file"]')).toBeNull();
+    expect(
+      screen.getByText("15 photos is the maximum — remove one to add another.")
+    ).toBeDefined();
+    // All 15 owner picks survive: none was dropped to make room.
+    expect(screen.getAllByText(/^Photo \d+$/)).toHaveLength(15);
+    expect(screen.getAllByText("Not uploaded yet")).toHaveLength(10);
+    // Create mode offers the retry action on each failed tile.
+    expect(screen.getAllByRole("button", { name: "Failed — retry" })).toHaveLength(
+      5
+    );
+    expect(onPhotos).not.toHaveBeenCalled();
+    expect(backendOps.remove).not.toHaveBeenCalled();
+  });
+});
+
 describe("PhotosChapter readOnly (edit mode)", () => {
   function renderReadOnly(initial: PhotoDraft[]) {
     const store = new Map<string, File>();

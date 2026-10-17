@@ -463,3 +463,64 @@ describe("EditWizard save flow", () => {
     expect(saved?.draft.listing.title).toBe("My local edit");
   });
 });
+
+describe("EditWizard review-and-save final step", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    vi.clearAllMocks();
+    window.scrollTo = vi.fn() as never;
+  });
+
+  function seedTitleEdit() {
+    const s = source();
+    const snapshot = hydrateEditDraft({
+      listing: s.listing,
+      unit: s.unit,
+      property: s.property,
+    } as never);
+    const draft = {
+      ...snapshot,
+      listing: { ...snapshot.listing, title: "My local edit" },
+    };
+    saveEditSession("test-uid", 100, {
+      draft,
+      savedSnapshot: snapshot,
+      updatedAt: 1,
+    });
+    mockedLoad.mockResolvedValue(source() as never);
+  }
+
+  it("explains device-local edits and opens the review from the primary action", async () => {
+    seedTitleEdit();
+    render(<EditWizard uid="test-uid" listingId={100} />);
+    await screen.findByText("What are you renting?");
+    // The edit rail relabels the creation "Publish" chapter.
+    fireEvent.click(
+      screen.getByRole("button", { name: "14. Review & save" })
+    );
+    await screen.findByText("Ready to save your changes?");
+    expect(
+      screen.getByText(/stay on this device until you save/)
+    ).toBeDefined();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Review and save" })
+    );
+    await screen.findByText("Review your changes");
+  });
+
+  it("disables the primary action and explains when nothing changed", async () => {
+    window.localStorage.clear();
+    mockedLoad.mockResolvedValue(source() as never);
+    render(<EditWizard uid="test-uid" listingId={100} />);
+    await screen.findByText("What are you renting?");
+    fireEvent.click(
+      screen.getByRole("button", { name: "14. Review & save" })
+    );
+    await screen.findByText("Ready to save your changes?");
+    const button = screen.getByRole("button", {
+      name: "Review and save",
+    }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(screen.getByText(/No changes yet/)).toBeDefined();
+  });
+});

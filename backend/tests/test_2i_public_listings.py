@@ -6,8 +6,10 @@ Public endpoints take no auth: the client fixture below issues requests
 without dependency overrides, exactly like an anonymous renter. The
 owner-side setup helpers reuse the authenticated owner endpoints.
 """
+import json
 import os
 import uuid
+from datetime import date, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 from app import auth as auth_module
 from app.main import app
 from app.models import (
+    Amenity,
     Listing,
     ListingPhoto,
     ListingPriceComponent,
@@ -304,6 +307,38 @@ def set_property_area(client, uid, pid, area_id):
         json={"area_location_id": area_id},
     )
     assert res.status_code == 200, res.text
+
+
+def insert_typed_location(engine, loc_type, name):
+    """Seed a college/workplace Location (mirrors insert_area)."""
+    db = sessionmaker(bind=engine)()
+    try:
+        loc = Location(
+            type=loc_type,
+            name=f"2I Test {name} {uuid.uuid4().hex[:6]}",
+            city="Guwahati",
+        )
+        db.add(loc)
+        db.commit()
+        db.refresh(loc)
+        return loc.id
+    finally:
+        db.close()
+
+
+def first_active_amenity(engine):
+    """An existing active amenity (id, label), or None when unseeded."""
+    db = sessionmaker(bind=engine)()
+    try:
+        row = (
+            db.query(Amenity)
+            .filter(Amenity.is_active.is_(True))
+            .order_by(Amenity.id.asc())
+            .first()
+        )
+        return (row.id, row.label) if row is not None else None
+    finally:
+        db.close()
 
 
 def make_published(client, engine, uid, **kwargs):
@@ -739,3 +774,187 @@ def test_owner_publish_then_anonymous_discovery(client, engine):
     assert len(detail["photos"]) == 3
     assert all(p["view_url"].startswith("https://fake-b2.test/view/")
                for p in detail["photos"])
+
+
+# OWNER EDITS FLOW TO PUBLIC READS
+
+
+def test_owner_edits_of_a_published_listing_flow_to_public_reads(client, engine):
+    """The seam between the owner edit endpoints and the public reads.
+
+    Supported edits to a PUBLISHED listing (property, unit + policies,
+    pricing, rent basis, listing text, availability) must appear in the
+    public list and detail responses, while private fields stay hidden.
+    test_2e covers the owner write endpoints and test_2i the public reads;
+    this exercises both together through the real API.
+    """
+    college = insert_typed_location(engine, "college", "College")
+    workplace = insert_typed_location(engine, "workplace", "Workplace")
+    amenity = first_active_amenity(engine)
+    assert amenity is not None, "amenity catalog is empty"
+    amenity_id, amenity_label = amenity
+
+    provision_owner(client, UID)
+    pid = create_property(
+        client,
+        UID,
+        address_line="  12 Old Street  ",
+        pincode="781014",
+        nearest_college_id=college,
+        nearest_workplace_id=workplace,
+    )
+    unit_id = create_unit(client, UID, pid)
+    listing = create_listing(
+        client,
+        UID,
+        unit_id,
+        title="Old title",
+        description="Old description",
+        rent_basis="PER_PERSON",
+    )
+    lid = listing["id"]
+    put_prices(client, UID, lid, [valid_price(amount_paise=800000)])
+    set_listing_status(engine, lid, "PUBLISHED")
+
+    # Baseline: the public detail reflects the original values.
+    before = client.get(f"/api/v1/listings/{lid}").json()
+    assert before["title"] == "Old title"
+    assert before["description"] == "Old description"
+    assert before["rent_basis"] == "PER_PERSON"
+    assert before["monthly_total_paise"] == 800000
+    assert before["availability_status"] == "AVAILABLE_NOW"
+    assert before["property"]["name"] is None
+    assert before["unit"]["house_rules"] is None
+
+    # --- Owner edits ---
+    prop_patch = authed(client, uid=UID).patch(
+        f"/api/v1/owner/properties/{pid}",
+        json={
+            "name": "Edited Property Name",
+            "locality": "Edited Locality",
+            "area_custom_name": "Edited Area",
+            "address_line": "99 Secret Lane",
+            "pincode": "781099",
+            "nearest_college_id": college,
+            "nearest_workplace_id": workplace,
+        },
+    )
+    assert prop_patch.status_code == 200, prop_patch.text
+
+    unit_patch = authed(client, uid=UID).patch(
+        f"/api/v1/owner/units/{unit_id}",
+        json={
+            "house_rules": "No loud music after 10pm.",
+            "couple_friendly": True,
+            "visitors_allowed": False,
+            "pets_allowed": True,
+            "smoking_allowed": False,
+            "alcohol_allowed": False,
+            "amenity_ids": [amenity_id],
+        },
+    )
+    assert unit_patch.status_code == 200, unit_patch.text
+
+    # A rent-basis change mirrors the client save orchestration: clear the
+    # old-basis rows, PATCH the basis, then PUT the full intended set.
+    clear = authed(client, uid=UID).put(
+        f"/api/v1/owner/listings/{lid}/price-components", json=[]
+    )
+    assert clear.status_code == 200, clear.text
+    basis_patch = authed(client, uid=UID).patch(
+        f"/api/v1/owner/listings/{lid}",
+        json={
+            "title": "Edited title",
+            "description": "Edited description",
+            "rent_basis": "PER_ROOM",
+        },
+    )
+    assert basis_patch.status_code == 200, basis_patch.text
+    put_prices(
+        client,
+        UID,
+        lid,
+        [valid_price(calculation_basis="PER_ROOM", amount_paise=900000)],
+    )
+
+    future = date.today() + timedelta(days=14)
+    avail = authed(client, uid=UID).post(
+        f"/api/v1/owner/listings/{lid}/availability",
+        json={
+            "availability_status": "AVAILABLE_FROM_DATE",
+            "available_from": future.isoformat(),
+        },
+    )
+    assert avail.status_code == 200, avail.text
+
+    # --- Public list now reflects every public edit. ---
+    summary = next(
+        row
+        for row in client.get("/api/v1/listings", params={"limit": 50}).json()
+        if row["id"] == lid
+    )
+    assert summary["title"] == "Edited title"
+    assert summary["description"] == "Edited description"
+    assert summary["rent_basis"] == "PER_ROOM"
+    assert summary["monthly_total_paise"] == 900000
+    assert summary["availability_status"] == "AVAILABLE_FROM_DATE"
+    assert summary["available_from"] == future.isoformat()
+    assert summary["property"]["name"] == "Edited Property Name"
+    assert summary["property"]["locality"] == "Edited Locality"
+    assert summary["property"]["area_name"] == "Edited Area"
+    assert summary["unit"]["house_rules"] == "No loud music after 10pm."
+    assert summary["unit"]["couple_friendly"] is True
+    assert summary["unit"]["pets_allowed"] is True
+    assert summary["unit"]["visitors_allowed"] is False
+    assert summary["unit"]["smoking_allowed"] is False
+    assert summary["unit"]["alcohol_allowed"] is False
+    assert amenity_label in summary["unit"]["amenities"]
+
+    # --- Public detail agrees, including the replaced pricing row. ---
+    detail = client.get(f"/api/v1/listings/{lid}").json()
+    assert detail["title"] == "Edited title"
+    assert detail["rent_basis"] == "PER_ROOM"
+    assert detail["monthly_total_paise"] == 900000
+    assert detail["unit"]["house_rules"] == "No loud music after 10pm."
+    rent_rows = [
+        row
+        for row in detail["price_components"]
+        if row["charge_type"] == "RENT"
+    ]
+    assert len(rent_rows) == 1
+    assert rent_rows[0]["amount_paise"] == 900000
+    assert rent_rows[0]["calculation_basis"] == "PER_ROOM"
+    # Editing never changes lifecycle.
+    assert detail["status"] == "PUBLISHED"
+
+    # --- Private fields stay hidden, and their values never leak. ---
+    forbidden = {
+        "owner_user_id", "rental_unit_id", "property_id", "address_line",
+        "pincode", "latitude", "longitude", "nearest_college_id",
+        "nearest_workplace_id", "storage_key", "firebase_uid", "phone_number",
+        "email",
+    }
+    assert not (set(detail) & forbidden), detail.keys()
+    assert not (set(detail["property"]) & forbidden)
+    assert not (set(detail["unit"]) & forbidden)
+    serialized = json.dumps(detail)
+    assert "99 Secret Lane" not in serialized
+    assert "781099" not in serialized
+
+
+@pytest.mark.parametrize("hidden_status", ["DRAFT", "PAUSED", "RENTED", "ARCHIVED"])
+def test_owner_edits_of_unpublished_listing_stay_hidden(
+    client, engine, hidden_status
+):
+    """Editing a non-PUBLISHED listing must never make it publicly visible."""
+    _, _, lid = make_published(client, engine, UID, status=hidden_status)
+
+    res = authed(client, uid=UID).patch(
+        f"/api/v1/owner/listings/{lid}",
+        json={"title": "Edited but still hidden"},
+    )
+    assert res.status_code == 200, res.text
+
+    listed = client.get("/api/v1/listings", params={"limit": 50}).json()
+    assert lid not in [row["id"] for row in listed]
+    assert client.get(f"/api/v1/listings/{lid}").status_code == 404

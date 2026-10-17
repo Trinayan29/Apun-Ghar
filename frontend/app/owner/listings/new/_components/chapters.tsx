@@ -1222,12 +1222,29 @@ export function PhotosChapter({
         if (mime) picked.push({ file, mime });
       }
       if (picked.length === 0) return;
-      // Backend listing first (existing submit flow); without it uploads
-      // stay local picks and sync on the next attempt.
+      // Never drop the owner's extra selections without saying so: the slice
+      // above silently discards anything past the cap.
+      if (files.length > room) {
+        const skipped = files.length - room;
+        setLocalError(
+          `Only ${room} photo${room === 1 ? "" : "s"} could be added — ` +
+            `${skipped} more didn't fit. 15 is the maximum; remove one to ` +
+            "add another."
+        );
+      }
+      // Backend listing first (existing submit flow). When the draft cannot
+      // be created there is nowhere to upload to, so the picks must NOT stay
+      // silent "local" tiles: they render identically to uploaded photos and
+      // read as accepted. Record the real blocker and create them as failed,
+      // which surfaces the existing Failed/retry UI. The File bytes are kept
+      // in fileStore either way, so retry (and the send/publish sweep) can
+      // still upload them once a listing id exists.
       let targetListingId = listingId;
+      let ensureFailure: string | null = null;
       if (targetListingId == null) {
         const ensured = await onEnsureListing();
         if (!ensured.ok) {
+          ensureFailure = ensured.message;
           setLocalError(ensured.message);
         } else {
           targetListingId = ensured.listingId;
@@ -1241,12 +1258,12 @@ export function PhotosChapter({
           id: newPhotoId(),
           name: file.name || "Photo",
           src: preview.src,
-          status: "local",
+          status: ensureFailure === null ? "local" : "failed",
           cover: base.length === 0,
           order: base.length,
           backendId: null,
           viewUrl: null,
-          error: null,
+          error: ensureFailure,
         };
         base.push(tile);
         fileStore?.set(tile.id, file);
@@ -1408,6 +1425,13 @@ export function PhotosChapter({
             {p.status === "ready" && (
               <span className="absolute right-2 top-2 rounded-full bg-[#2F7D4F] px-2.5 py-1 text-[11px] font-bold text-white">
                 Ready ✓
+              </span>
+            )}
+            {/* A pick that is not on the server yet must never be
+                indistinguishable from an uploaded photo. */}
+            {p.status === "local" && (
+              <span className="absolute right-2 top-2 rounded-full bg-ink/70 px-2.5 py-1 text-[11px] font-bold text-white">
+                Not uploaded yet
               </span>
             )}
             {p.status === "failed" && !readOnly && (

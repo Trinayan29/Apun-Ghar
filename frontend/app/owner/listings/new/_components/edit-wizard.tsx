@@ -58,6 +58,15 @@ import {
 import { ReviewChanges, SaveFailurePanel, SaveProgressPanel, SaveSuccessPanel } from "./review-changes";
 
 /**
+ * Edit-mode chapter rail: creation ends by publishing, but an edit ends
+ * by reviewing and saving, so the final chapter is relabelled to match.
+ * The chapter id stays "publish" (navigation is id-based).
+ */
+const EDIT_CHAPTERS = CHAPTERS.map((c) =>
+  c.id === "publish" ? { ...c, title: "Review & save" } : c
+);
+
+/**
  * Edit Listing: load + inspect + save.
  *
  * Reads stay GET-only (loader, refresh, retry). The only mutations are
@@ -544,20 +553,27 @@ export function EditWizard({
       return (
         <FormSection
           id="chapter-publish-edit"
-          kicker="Publish"
-          title="Saving arrives in Phase 2"
-          lede="You're inspecting this listing. Nothing you change here is sent anywhere yet."
+          kicker="Finish"
+          title="Ready to save your changes?"
+          lede="Your edits stay on this device until you save — nothing has reached Apun-Ghar yet. Review exactly what changed, then save them."
         >
-          <Link
-            href="/owner/dashboard"
-            className="mt-3 flex min-h-[52px] items-center justify-center rounded-2xl bg-brand-600 text-[16px] font-bold text-white transition active:scale-[0.98]"
+          <button
+            type="button"
+            onClick={openReview}
+            disabled={!isDirty}
+            className="mt-3 flex min-h-[52px] w-full items-center justify-center rounded-2xl bg-brand-600 text-[16px] font-bold text-white transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Back to Studio
-          </Link>
+            Review and save
+          </button>
+          {!isDirty && (
+            <p className="mt-2 text-[13px] text-muted">
+              No changes yet — edit something first, then review and save.
+            </p>
+          )}
         </FormSection>
       );
     return null;
-  }, [draft, chapter, formError, patchDraft, goChapter, listingId, fileStore]);
+  }, [draft, chapter, formError, patchDraft, goChapter, isDirty, openReview, listingId, fileStore]);
 
   if (loading && !draft) {
     return (
@@ -587,7 +603,7 @@ export function EditWizard({
       backHref="/owner/dashboard"
       title="Edit listing"
       subtitle={isDirty ? "Unsaved changes" : "Inspecting your saved listing"}
-      chapters={CHAPTERS}
+      chapters={EDIT_CHAPTERS}
       current={chapter}
       onJump={goChapter}
     >
@@ -681,7 +697,7 @@ export function EditWizard({
                     {changeCount === 1
                       ? "1 change since the saved version."
                       : `${changeCount} changes since the saved version.`}{" "}
-                    Nothing is sent anywhere yet.
+                    Review them when you&apos;re ready to save.
                   </p>
                 </div>
                 <button

@@ -136,6 +136,19 @@ describe("Review Changes entry", () => {
     expect(screen.queryByText("House rules & stay")).toBeNull();
   });
 
+  it("copy tells owners to save here, not that saving arrives separately", async () => {
+    seedSession({ dirty: true });
+    render(<EditWizard uid="test-uid" listingId={100} />);
+    fireEvent.click(await screen.findByText("Review Changes"));
+    await screen.findByText("Review your changes");
+    expect(screen.getByText(/Check them over, then save/)).toBeDefined();
+    expect(
+      screen.getByText(/look them over carefully before saving/)
+    ).toBeDefined();
+    expect(screen.queryByText(/Nothing is sent anywhere from here/)).toBeNull();
+    expect(screen.queryByText(/Saving arrives separately/)).toBeNull();
+  });
+
   it("Back to editing preserves the draft exactly", async () => {
     seedSession({ dirty: true });
     render(<EditWizard uid="test-uid" listingId={100} />);

@@ -151,7 +151,7 @@ export function ReviewChanges({
         title="Review your changes"
         lede={`${
           total === 1 ? "1 change" : `${total} changes`
-        } compared with the saved version. Nothing is sent anywhere from here.`}
+        } compared with the saved version. Check them over, then save.`}
       >
         {significant && (
           <div
@@ -163,7 +163,7 @@ export function ReviewChanges({
             </p>
             <p className="mt-1 text-[13.5px] leading-relaxed text-muted">
               Those affect what renters pay or what you&apos;re offering, so
-              look them over carefully. Saving arrives separately.
+              look them over carefully before saving.
             </p>
           </div>
         )}
