@@ -23,6 +23,7 @@ import {
   submitErrorMessage,
   type SubmitGuard,
 } from "@/lib/listing-submit-action";
+import { useAmenityCatalog } from "@/lib/use-amenity-catalog";
 import {
   createDeleteDraftGuard,
   findLocalDraftIdByListingId,
@@ -165,6 +166,10 @@ function Dashboard() {
   const submitGuardRef = useRef<SubmitGuard | null>(null);
   if (submitGuardRef.current === null)
     submitGuardRef.current = createSubmitGuard();
+  // Active amenity catalog (GET /api/v1/amenities); undefined until it
+  // resolves. A retry of a draft with amenity selections surfaces a clear
+  // error instead of silently dropping them.
+  const amenityCatalog = useAmenityCatalog();
   const [sending, setSending] = useState<Record<string, boolean>>({});
   const [actionErrors, setActionErrors] = useState<Record<string, string | null>>(
     {}
@@ -186,6 +191,7 @@ function Dashboard() {
         const outcome = await runSubmitAction({
           draft: full,
           guard: submitGuardRef.current as SubmitGuard,
+          catalog: amenityCatalog,
           persist: (ids, progress) =>
             flushSync(() => {
               updateDraft(draftId, { backendIds: ids, submitProgress: progress });
@@ -209,7 +215,7 @@ function Dashboard() {
         setSending((m) => ({ ...m, [draftId]: false }));
       }
     },
-    [getDraft, updateDraft, loadStudio, router]
+    [getDraft, updateDraft, loadStudio, router, amenityCatalog]
   );
 
   // Delete Draft: single-flight guard shared across cards, per the Retry

@@ -190,22 +190,25 @@ flowchart TB
     USERS["users.py<br/>/users"]
     OWNERS["owners.py<br/>/owners"]
     LOC["locations.py<br/>/locations"]
+    AMEN["amenities.py<br/>/amenities"]
     PROPS["properties.py<br/>/owner/properties"]
     UNITS["rental_units.py<br/>/owner/properties+units"]
     LIST["listings.py<br/>/owner/listings"]
 
-    MAIN --> USERS & OWNERS & LOC & PROPS & UNITS & LIST
+    MAIN --> USERS & OWNERS & LOC & AMEN & PROPS & UNITS & LIST
     USERS --> AUTH & DB & MODELS & LOC
     OWNERS --> AUTH & DB
     LOC --> DB & MODELS
+    AMEN --> DB & MODELS
     PROPS --> AUTH & DB & MODELS & LOC
-    UNITS --> AUTH & DB & MODELS
-    LIST --> AUTH & DB & MODELS
+    UNITS --> AUTH & DB & MODELS & AMEN
+    LIST --> AUTH & DB & MODELS & AMEN
 ```
 
 Notes: `owners.py` reuses `UserRead` from `users.py`; `properties.py`
 and `users.py` reuse `validate_location_reference` from
-`locations.py`. No module imports from another domain's router.
+`locations.py`; `rental_units.py` and `listings.py` reuse `AmenityRead`
+from `amenities.py`. No module imports from another domain's router.
 
 **Session management** (`db.py`): module-level `engine`
 (`pool_pre_ping=True`), `SessionLocal(autoflush=False,
@@ -223,10 +226,10 @@ handler, no unit-of-work abstraction.
 **Testing:** pytest + httpx `TestClient(raise_server_exceptions=False)`,
 per-file fixtures overriding `get_firebase_claims` with canned claims,
 module-scoped engine fixtures that **skip** when PostgreSQL is
-unreachable. 15 test files: model/migration/auth/cors/health/
-locations/owners/users/profile/2C-properties/2D-units/2E-listings/2F-domain/2H-photos
-(see §25 for commit-scoped figures; the backend suite carries 15
-pre-existing local-DB failures).
+unreachable. 18 test files (model/migration, DB guard, auth, CORS,
+health, locations, owners, users, profile, and the 2C–2J feature
+suites; see §25 for commit-scoped figures). The backend suite carries 15
+pre-existing local-DB failures.
 
 ---
 
@@ -258,6 +261,30 @@ Auth = Firebase Bearer required unless noted. No versioning beyond
 `ilike` match on name/city, ordered `(name, id)`, `limit` 1–50.
 422 on unknown `type`. Backing seed: real Guwahati institutions
 (`seed.py` + migration catalog).
+
+### Amenities (public — no auth)
+
+`GET /api/v1/amenities` — active amenity catalog (`Amenity.is_active`),
+ordered by `id` asc, each row `{id, slug, label, category, icon_slug,
+is_active}`. `slug` is the stable canonical identity; `id` is the
+database-generated value the unit write paths require. There is no
+tenant data here. The owner wizard loads this once and resolves each
+selected label to an `amenity_id`; if the catalog is unavailable or a
+label cannot be resolved, the create/edit send **fails with a clear
+error** (draft selections preserved) rather than silently dropping them.
+
+Clients join on `slug`, never on `label`: the wizard's wording differs
+from the seeded labels ("AC" vs "Air Conditioning", "Security" vs
+"Security Guard"), so a label comparison would hide saved amenities from
+the edit form and delete them on the next amenity change. The edit form
+hydrates saved amenities by slug, so an unchanged selection is preserved
+and only a real change is written.
+
+**Catalog drift:** a server amenity whose `slug` a client build does not
+know cannot be represented in the wizard, so it is neither shown nor
+preserved by an amenity edit. The current client table covers all 13
+seeded slugs; extending the catalog requires extending that table in the
+same change.
 
 ### Owner properties (`require_role("OWNER")`, prefix `/api/v1/owner/properties`)
 
@@ -877,7 +904,9 @@ preflight regression test), `test_health.py`, `test_locations.py`,
 `test_2c_properties.py`, `test_2d_rental_units.py`,
 `test_2e_listings.py` (foundation + publication + draft deletion,
 incl. a threaded same-unit concurrency test),
-`test_2f_domain.py`, `test_2h_listing_photos.py`.
+`test_2f_domain.py`, `test_2h_listing_photos.py`,
+`test_2j_amenity_catalog.py` (public catalog + owner-selection
+persistence via the catalog).
 Conventions: canned Firebase claims via dependency override, per-test
 DB cleanup keyed by uid prefix (`t2c-`, `t2d-`, `t2e-`), module engine
 fixture that **skips** when PostgreSQL is unreachable, negative-path

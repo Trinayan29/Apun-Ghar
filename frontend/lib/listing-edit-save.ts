@@ -40,6 +40,7 @@ import {
   type SubmitGuard,
 } from "./listing-submit-action";
 import type { Transport, SubmitStep } from "./listing-submit-flow";
+import type { AmenityCatalogEntry } from "./listing-submit";
 import type { ListingDraft } from "./listing-draft";
 
 /** Logical save steps. Reuses the create-flow vocabulary on purpose:
@@ -89,6 +90,9 @@ export interface RunEditSaveDeps {
   fromDetail?: "price-clear" | "price-full";
   transport?: Transport;
   guard?: SubmitGuard;
+  /** Active amenity catalog (GET /api/v1/amenities). Required to save an
+   *  amenity change; a change with no catalog becomes a plan issue. */
+  catalog?: AmenityCatalogEntry[];
   /** Fresh server context (status + rent_basis). Defaults to a listing GET. */
   fetchContext?: (listingId: number) => Promise<SaveContext>;
   /** Authoritative session rebuild. Defaults to load + hydrate. */
@@ -325,7 +329,7 @@ export async function runEditSave(
 
     // Fresh plan every attempt (including retries): stale request bodies
     // can never replay, and user edits after a failure are picked up.
-    const plan = planSave(deps.draft, deps.snapshot, ctx);
+    const plan = planSave(deps.draft, deps.snapshot, ctx, deps.catalog);
     if (plan.issues.length > 0) {
       return {
         ok: false,

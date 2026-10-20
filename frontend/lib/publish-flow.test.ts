@@ -230,6 +230,27 @@ describe("sendThenPublish (Step-14 sequencing)", () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it("B2: unresolvable amenities stop the send before publish", async () => {
+    const { calls, transport } = recordingTransport();
+    const publish = vi.fn();
+    const d = sendableDraft();
+    d.space.amenities = ["Wi-Fi"];
+    const outcome = await sendThenPublish({
+      draft: d,
+      guard: createSubmitGuard(),
+      transport,
+      // No catalog: the selection cannot be attached.
+      ...publishing({ publish, reload: vi.fn() }),
+      persist: () => {},
+    });
+    expect(outcome).toMatchObject({ ok: false, stage: "send" });
+    if (outcome.ok || outcome.stage !== "send") return;
+    expect(outcome.error).toMatch(/couldn't load/i);
+    // Fail closed: nothing was written and nothing was published.
+    expect(calls).toHaveLength(0);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it("C: sync failure stops before publish with the real error", async () => {
     const transport: Transport = async <T,>(path: string): Promise<T> => {
       if (path === "/api/v1/owner/properties") return { id: 10 } as T;

@@ -155,6 +155,72 @@ describe("runEditSave success path", () => {
     if (!outcome.ok) return;
     expect(outcome.appliedSteps).toEqual([]);
   });
+
+  it("forwards the catalog so a changed amenity selection is saved as ids", async () => {
+    const snapshot = validDraft();
+    const draft = clone(snapshot);
+    draft.space.amenities = ["Wi-Fi", "Parking"];
+    const { calls, transport } = makeTransport();
+
+    const outcome = await runEditSave({
+      draft,
+      snapshot,
+      ids: IDS,
+      generation: 7,
+      significant: false,
+      confirmed: true,
+      transport,
+      fetchContext: ctxStub(),
+      reloadDraft: reloadStub(clone(draft)),
+      catalog: [
+        { id: 1, slug: "wifi" },
+        { id: 4, slug: "parking" },
+      ],
+    });
+
+    expect(outcome.ok).toBe(true);
+    const unitPatch = calls.find(
+      (c) => c.method === "PATCH" && c.path === "/api/v1/owner/units/10"
+    );
+    expect(
+      (unitPatch?.body as Record<string, unknown> | undefined)?.amenity_ids
+    ).toEqual([1, 4]);
+  });
+
+  it("keeps the other saved amenities when one amenity changes", async () => {
+    const snapshot = validDraft();
+    snapshot.space.amenities = ["Wi-Fi", "AC"];
+    const draft = clone(snapshot);
+    draft.space.amenities = ["Wi-Fi", "AC", "Parking"];
+    const { calls, transport } = makeTransport();
+
+    const outcome = await runEditSave({
+      draft,
+      snapshot,
+      ids: IDS,
+      generation: 7,
+      significant: false,
+      confirmed: true,
+      transport,
+      fetchContext: ctxStub(),
+      reloadDraft: reloadStub(clone(draft)),
+      catalog: [
+        { id: 1, slug: "wifi" },
+        { id: 2, slug: "ac" },
+        { id: 4, slug: "parking" },
+      ],
+    });
+
+    expect(outcome.ok).toBe(true);
+    const unitPatch = calls.find(
+      (c) => c.method === "PATCH" && c.path === "/api/v1/owner/units/10"
+    );
+    // "AC" (id 2) is still attached: adding one amenity must never drop the
+    // others just because the backend labels them differently.
+    expect(
+      (unitPatch?.body as Record<string, unknown> | undefined)?.amenity_ids
+    ).toEqual([1, 2, 4]);
+  });
 });
 
 describe("runEditSave per-step failures", () => {
@@ -807,6 +873,29 @@ describe("gates: validation, issues, confirmation, guard", () => {
     expect(outcome.ok).toBe(false);
     if (outcome.ok) return;
     expect(outcome.reason).toBe("plan-issues");
+    expect(calls).toEqual([]);
+  });
+
+  it("blocks a changed amenity selection when no catalog is available", async () => {
+    const snapshot = validDraft();
+    const draft = clone(snapshot);
+    draft.space.amenities = ["Wi-Fi"];
+    const { calls, transport } = makeTransport();
+    const outcome = await runEditSave({
+      draft,
+      snapshot,
+      ids: IDS,
+      generation: 1,
+      significant: false,
+      confirmed: true,
+      transport,
+      fetchContext: ctxStub(),
+      reloadDraft: reloadStub(),
+    });
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) return;
+    expect(outcome.reason).toBe("plan-issues");
+    expect(outcome.issues?.[0].field).toBe("space.amenities");
     expect(calls).toEqual([]);
   });
 

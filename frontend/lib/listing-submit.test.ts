@@ -5,8 +5,10 @@
 import { describe, expect, it } from "vitest";
 import {
   CONSUMPTION_UNIT_BY_KIND,
+  amenityFailureMessage,
   describeAmenities,
   mapAmenityToSlug,
+  mapAmenitySlugToLabel,
   mapAudience,
   mapBathrooms,
   mapCarpetArea,
@@ -23,8 +25,9 @@ import {
   serializePriceComponents,
   serializeProperty,
   serializeUnit,
+  unresolvedAmenityLabels,
 } from "./listing-submit";
-import { emptyDraft, type ListingDraft } from "./listing-draft";
+import { AMENITIES, emptyDraft, type ListingDraft } from "./listing-draft";
 
 function baseDraft(): ListingDraft {
   const d = emptyDraft("test-draft");
@@ -154,6 +157,16 @@ describe("unit composition mapping", () => {
     });
   });
 
+  it("the slug table round-trips for every wizard amenity", () => {
+    for (const label of AMENITIES) {
+      const slug = mapAmenityToSlug(label);
+      expect(slug).not.toBeNull();
+      expect(mapAmenitySlugToLabel(slug as string)).toBe(label);
+    }
+    // An unknown slug is unrepresentable, not silently mapped to something.
+    expect(mapAmenitySlugToLabel("rooftop-pool")).toBeNull();
+  });
+
   it("never sends amenity_slugs; omits amenity_ids without a catalog", () => {
     const d = baseDraft();
     d.space.amenities = ["Wi-Fi", "Parking"];
@@ -192,6 +205,48 @@ describe("unit composition mapping", () => {
     expect(
       resolveAmenityIds(["wifi"], [{ id: -3, slug: "wifi" }])
     ).toEqual({ ids: [], missing: ["wifi"] });
+  });
+
+  it("unresolvedAmenityLabels allows an empty selection, flags a miss and a failed load", () => {
+    const catalog = [{ id: 1, slug: "wifi" }];
+    const empty = baseDraft();
+    expect(unresolvedAmenityLabels(empty, undefined)).toEqual({
+      canAttach: true,
+      catalogUnavailable: false,
+      labels: [],
+    });
+
+    const resolvable = baseDraft();
+    resolvable.space.amenities = ["Wi-Fi"];
+    expect(unresolvedAmenityLabels(resolvable, catalog)).toEqual({
+      canAttach: true,
+      catalogUnavailable: false,
+      labels: [],
+    });
+
+    const miss = baseDraft();
+    miss.space.amenities = ["Wi-Fi", "Rooftop pool"];
+    expect(unresolvedAmenityLabels(miss, catalog)).toEqual({
+      canAttach: false,
+      catalogUnavailable: false,
+      labels: ["Rooftop pool"],
+    });
+
+    const noCatalog = baseDraft();
+    noCatalog.space.amenities = ["Wi-Fi"];
+    expect(unresolvedAmenityLabels(noCatalog, undefined)).toEqual({
+      canAttach: false,
+      catalogUnavailable: true,
+      labels: ["Wi-Fi"],
+    });
+  });
+
+  it("amenityFailureMessage distinguishes a load failure from a mismatch", () => {
+    expect(amenityFailureMessage(["Rooftop pool"], false)).toContain(
+      "Rooftop pool"
+    );
+    expect(amenityFailureMessage(["Wi-Fi"], true)).toMatch(/couldn't load/i);
+    expect(amenityFailureMessage(["Wi-Fi"], true)).not.toContain("Wi-Fi");
   });
 
   it("maps placeName to property name, trimmed, independent of the title", () => {

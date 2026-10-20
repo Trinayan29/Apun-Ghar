@@ -463,6 +463,29 @@ describe("submit messages", () => {
     ).toMatch(/already has a listing.*instead of retrying/);
   });
 
+  it("surfaces an amenity resolution failure ahead of the raw error", () => {
+    const noCatalog = submitErrorMessage({
+      ok: false,
+      ids: { propertyId: null, unitId: null, listingId: null },
+      progress: { price: false, availability: false },
+      failedStep: "unit",
+      error: "raw",
+      amenityIssue: { catalogUnavailable: true, labels: ["Wi-Fi"] },
+    });
+    expect(noCatalog).toMatch(/couldn't load/i);
+    expect(noCatalog).not.toBe("raw");
+
+    const mismatch = submitErrorMessage({
+      ok: false,
+      ids: { propertyId: null, unitId: null, listingId: null },
+      progress: { price: false, availability: false },
+      failedStep: "unit",
+      error: "raw",
+      amenityIssue: { catalogUnavailable: false, labels: ["Rooftop pool"] },
+    });
+    expect(mismatch).toContain("Rooftop pool");
+  });
+
   it("confirms backend-draft success without claiming publish or amenities", () => {
     const base = {
       ok: true as const,

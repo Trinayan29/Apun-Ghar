@@ -27,6 +27,7 @@ import {
   type SubmitGuard,
 } from "@/lib/listing-submit-action";
 import type { SubmitResult } from "@/lib/listing-submit-flow";
+import { useAmenityCatalog } from "@/lib/use-amenity-catalog";
 import {
   CHAPTERS,
   IMPLEMENTED_CHAPTERS,
@@ -178,6 +179,11 @@ function Wizard() {
 
   const draft = draftId ? getDraft(draftId) : null;
 
+  // Active amenity catalog (GET /api/v1/amenities), fetched once. Undefined
+  // until it resolves; a draft with amenity selections errors clearly at
+  // send/save time rather than silently dropping them.
+  const amenityCatalog = useAmenityCatalog();
+
   // Existing properties for the Choose Property chapter, loaded lazily on
   // first visit. UID-scoping (never show another user's properties) lives
   // inside the hook; see use-property-chooser.ts.
@@ -315,6 +321,7 @@ function Wizard() {
       const outcome = await runSubmitAction({
         draft,
         guard: submitGuardRef.current as SubmitGuard,
+        catalog: amenityCatalog,
         persist: (ids, progress) =>
           updateDraft(draft.id, { backendIds: ids, submitProgress: progress }),
       });
@@ -334,7 +341,7 @@ function Wizard() {
     } finally {
       setSending(false);
     }
-  }, [draft, goChapter, updateDraft, getDraft, uploadPendingPhotos]);
+  }, [draft, goChapter, updateDraft, getDraft, uploadPendingPhotos, amenityCatalog]);
 
   // Creates the backend DRAFT listing through draft-save validation when
   // the photos chapter needs an id. No navigation; failures return the
@@ -347,9 +354,10 @@ function Wizard() {
     return ensureListingIdForDraft({
       draft,
       guard: submitGuardRef.current as SubmitGuard,
+      catalog: amenityCatalog,
       persist: (ids) => updateDraft(draft.id, { backendIds: ids }),
     });
-  }, [draft, updateDraft]);
+  }, [draft, updateDraft, amenityCatalog]);
 
   // Real publish: full authoritative send first (so an early-draft
   // listing always has synced price/availability before POST /publish),
@@ -364,6 +372,7 @@ function Wizard() {
       const outcome = await sendThenPublish({
         draft,
         guard: submitGuardRef.current as SubmitGuard,
+        catalog: amenityCatalog,
         persist: (ids, progress) =>
           updateDraft(draft.id, { backendIds: ids, submitProgress: progress }),
         sweep: (listingId) => uploadPendingPhotos(draft.id, listingId),
@@ -384,7 +393,7 @@ function Wizard() {
       setPublishing(false);
       publishGuardRef.current = false;
     }
-  }, [draft, updateDraft, goChapter, uploadPendingPhotos]);
+  }, [draft, updateDraft, goChapter, uploadPendingPhotos, amenityCatalog]);
 
   // Authoritative lifecycle on the publish chapter: a backend PUBLISHED
   // listing shows PUBLISHED state even after reload — the session-only

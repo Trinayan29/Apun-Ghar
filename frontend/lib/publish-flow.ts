@@ -30,6 +30,7 @@ import {
   type SubmitGuard,
 } from "./listing-submit-action";
 import type { SubmitResult, Transport } from "./listing-submit-flow";
+import type { AmenityCatalogEntry } from "./listing-submit";
 
 export interface SweepUpload {
   (
@@ -188,6 +189,7 @@ export async function sendThenPublish(deps: {
   draft: ListingDraft;
   guard: SubmitGuard;
   transport?: Transport;
+  catalog?: AmenityCatalogEntry[];
   persist: (ids: BackendIds, progress: SubmitProgress) => void;
   sweep?: (listingId: number) => Promise<unknown>;
   publish?: (id: number) => Promise<OwnerListingItem>;
@@ -197,6 +199,7 @@ export async function sendThenPublish(deps: {
     draft: deps.draft,
     guard: deps.guard,
     transport: deps.transport,
+    catalog: deps.catalog,
     persist: deps.persist,
   });
   if (sent.type === "busy") {

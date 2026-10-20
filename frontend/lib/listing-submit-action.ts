@@ -13,8 +13,8 @@
  * existing node harness. Rendering (loading/error/retry affordances) is
  * thin glue in the page + PublishChapter.
  *
- * Out of scope: photo uploads, real backend publish, amenity catalog,
- * H2 idempotency, H3 409 adoption.
+ * Out of scope: photo uploads, real backend publish, H2 idempotency,
+ * H3 409 adoption.
  */
 
 import {
@@ -24,6 +24,7 @@ import {
   type SubmitStep,
   type Transport,
 } from "./listing-submit-flow";
+import { amenityFailureMessage, type AmenityCatalogEntry } from "./listing-submit";
 import {
   normalizeBackendId,
   validateChooseProperty,
@@ -118,13 +119,18 @@ export async function ensureDraftListingIds(deps: {
   draft: ListingDraft;
   guard: SubmitGuard;
   transport?: Transport;
+  catalog?: AmenityCatalogEntry[];
   persist: (ids: BackendIds) => void;
 }): Promise<EnsureActionOutcome> {
   const blocker = validateForDraftSave(deps.draft);
   if (blocker !== null) return { type: "invalid", blocker };
   if (!deps.guard.tryStart()) return { type: "busy" };
   try {
-    const result = await ensureDraftListing(deps.draft, deps.transport);
+    const result = await ensureDraftListing(
+      deps.draft,
+      deps.transport,
+      deps.catalog
+    );
     deps.persist(result.ids);
     if (!result.ok) {
       return {
@@ -160,6 +166,7 @@ export async function ensureListingIdForDraft(deps: {
   draft: ListingDraft;
   guard: SubmitGuard;
   transport?: Transport;
+  catalog?: AmenityCatalogEntry[];
   persist: (ids: BackendIds) => void;
 }): Promise<EnsureListingResult> {
   const existing = normalizeBackendId(deps.draft.backendIds?.listingId);
@@ -221,13 +228,18 @@ export async function runSubmitAction(deps: {
   draft: ListingDraft;
   guard: SubmitGuard;
   transport?: Transport;
+  catalog?: AmenityCatalogEntry[];
   persist: (ids: BackendIds, progress: SubmitProgress) => void;
 }): Promise<SubmitActionOutcome> {
   const blocker = validateForSubmit(deps.draft);
   if (blocker !== null) return { type: "invalid", blocker };
   if (!deps.guard.tryStart()) return { type: "busy" };
   try {
-    const result = await submitListingDraft(deps.draft, deps.transport);
+    const result = await submitListingDraft(
+      deps.draft,
+      deps.transport,
+      deps.catalog
+    );
     deps.persist(result.ids, result.progress);
     return { type: "done", result };
   } finally {
@@ -251,6 +263,12 @@ const STEP_LABELS: Record<SubmitStep, string> = {
 export function submitErrorMessage(
   result: Extract<SubmitResult, { ok: false }>
 ): string {
+  if (result.amenityIssue) {
+    return amenityFailureMessage(
+      result.amenityIssue.labels,
+      result.amenityIssue.catalogUnavailable
+    );
+  }
   if (result.status === 401)
     return "Your session expired. Please sign in again, then retry — your saved progress is kept.";
   const where = STEP_LABELS[result.failedStep];
@@ -272,8 +290,9 @@ export function submitErrorMessage(
 
 /**
  * Success confirmation. Honest about what happened: details are stored as
- * a backend draft (NOT visible to renters, NOT published), and pending
- * amenities are named rather than claimed as saved.
+ * a backend draft (NOT visible to renters, NOT published). A successful
+ * send attaches every selected amenity or fails with an amenity error, so
+ * the pending branch is defensive only (e.g. hand-built results).
  */
 export function submitSuccessMessage(
   result: Extract<SubmitResult, { ok: true }>

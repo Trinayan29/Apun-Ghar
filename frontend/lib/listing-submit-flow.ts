@@ -29,13 +29,15 @@
 
 import { apiGet, apiPatch, apiPost, apiPut } from "./api";
 import {
-  describeAmenities,
+  amenityFailureMessage,
   serializeAvailability,
   serializeDraftListing,
   serializeListing,
   serializePriceComponents,
   serializeProperty,
   serializeUnit,
+  unresolvedAmenityLabels,
+  type AmenityCatalogEntry,
   type AvailabilityPayload,
   type ListingPayload,
   type PriceComponentPayload,
@@ -83,14 +85,24 @@ export interface SubmitSuccess {
   /** Completion markers the caller persists alongside the ids. */
   progress: SubmitProgress;
   /**
-   * Owner-selected amenity slugs NOT sent to the backend: no amenity
-   * catalog endpoint exists yet to resolve slug -> amenity_ids, so the
-   * unit is created amenity-free and these stay pending in the draft for
-   * a later attach phase (PATCH /api/v1/owner/units/{id}).
+   * Always empty on success: the full send either attaches every selected
+   * amenity (leaf flow) or fails with `amenityIssue`. Kept for callers
+   * that still read the field.
    */
   pendingAmenitySlugs: string[];
-  /** Owner-selected labels with no known catalog slug. Never sent. */
+  /** Always empty on success. See pendingAmenitySlugs. */
   unknownAmenityLabels: string[];
+}
+
+/**
+ * Amenity resolution failure: the owner selected amenities that could not
+ * be attached. `catalogUnavailable` distinguishes a failed catalog load
+ * from an individual unresolvable selection; `labels` carries the
+ * owner-facing names on either path.
+ */
+export interface AmenityResolutionIssue {
+  catalogUnavailable: boolean;
+  labels: string[];
 }
 
 export interface SubmitFailure {
@@ -103,6 +115,9 @@ export interface SubmitFailure {
   error: string;
   /** HTTP status when the failure came from the API (undefined on network failure). */
   status?: number;
+  /** Set when the send stopped because amenity selections couldn't be
+   *  attached (nothing was mutated for this reason). */
+  amenityIssue?: AmenityResolutionIssue;
 }
 
 export type SubmitResult = SubmitSuccess | SubmitFailure;
@@ -238,13 +253,39 @@ async function tryAdoptListing(
  * Submit Property -> RentalUnit -> Listing -> Price -> Availability for a
  * validated draft, skipping any step already recorded in the draft
  * (backendIds for creations, submitProgress for the id-tied steps).
+ *
+ * `catalog` is the active amenity catalog (GET /api/v1/amenities). When
+ * the draft selects amenities, the catalog must resolve every one of them
+ * or the send fails up front with an `amenityIssue` — never a silent drop.
  */
 export async function submitListingDraft(
   draft: ListingDraft,
-  transport: Transport = defaultTransport
+  transport: Transport = defaultTransport,
+  catalog?: AmenityCatalogEntry[]
 ): Promise<SubmitResult> {
   const ids: BackendIds = { ...draft.backendIds };
   const progress: SubmitProgress = { ...draft.submitProgress };
+
+  // Resolve amenities before any write: a catalog miss or a failed load
+  // fails the whole send with a clear error instead of quietly creating
+  // an amenity-free unit.
+  const amenity = unresolvedAmenityLabels(draft, catalog);
+  if (!amenity.canAttach) {
+    return {
+      ok: false,
+      ids,
+      progress,
+      failedStep: "unit",
+      error: amenityFailureMessage(
+        amenity.labels,
+        amenity.catalogUnavailable
+      ),
+      amenityIssue: {
+        catalogUnavailable: amenity.catalogUnavailable,
+        labels: amenity.labels,
+      },
+    };
+  }
 
   if (ids.propertyId === null) {
     const payload: PropertyPayload = serializeProperty(draft);
@@ -261,8 +302,7 @@ export async function submitListingDraft(
   }
 
   if (ids.unitId === null) {
-    // No catalog source in this phase: unit is created without amenities.
-    const payload: RentalUnitPayload = serializeUnit(draft);
+    const payload: RentalUnitPayload = serializeUnit(draft, catalog);
     try {
       const created = await transport<IdResponse>(
         `/api/v1/owner/properties/${ids.propertyId as number}/units`,
@@ -319,7 +359,7 @@ export async function submitListingDraft(
   try {
     await transport<unknown>(
       `/api/v1/owner/units/${ids.unitId as number}`,
-      serializeUnit(draft),
+      serializeUnit(draft, catalog),
       "PATCH"
     );
   } catch (err) {
@@ -372,9 +412,14 @@ export async function submitListingDraft(
     }
   }
 
-  const { slugs: pendingAmenitySlugs, unknownLabels: unknownAmenityLabels } =
-    describeAmenities(draft);
-  return { ok: true, ids, progress, pendingAmenitySlugs, unknownAmenityLabels };
+  // Every selection was resolved by the gate above (or there are none).
+  return {
+    ok: true,
+    ids,
+    progress,
+    pendingAmenitySlugs: [],
+    unknownAmenityLabels: [],
+  };
 }
 
 // Re-export payload types so integration phases import from one place.
@@ -406,7 +451,8 @@ export type EnsureResult =
  */
 export async function ensureDraftListing(
   draft: ListingDraft,
-  transport: Transport = defaultTransport
+  transport: Transport = defaultTransport,
+  catalog?: AmenityCatalogEntry[]
 ): Promise<EnsureResult> {
   const ids: BackendIds = { ...draft.backendIds };
 
@@ -426,7 +472,7 @@ export async function ensureDraftListing(
   }
 
   if (ids.unitId === null) {
-    const payload: RentalUnitPayload = serializeUnit(draft);
+    const payload: RentalUnitPayload = serializeUnit(draft, catalog);
     try {
       const created = await transport<IdResponse>(
         `/api/v1/owner/properties/${ids.propertyId as number}/units`,

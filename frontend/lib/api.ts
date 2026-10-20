@@ -1,4 +1,5 @@
 import { auth } from "@/lib/firebase";
+import type { AmenityCatalogEntry } from "./listing-submit";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
@@ -212,6 +213,19 @@ export interface OwnerUnitItem {
   property_id: number;
   unit_type: string;
   layout: string | null;
+  /** Backend always returns the unit's amenity rows; optional here so
+   *  structural fixtures stay valid. */
+  amenities?: OwnerAmenityItem[];
+}
+
+/** One amenity row as the backend serializes it (owner unit reads). */
+export interface OwnerAmenityItem {
+  id: number;
+  slug: string;
+  label: string;
+  category?: string | null;
+  icon_slug?: string | null;
+  is_active?: boolean;
 }
 
 export interface OwnerPriceItem {
@@ -316,6 +330,9 @@ export interface OwnerListingItem {
   status: string;
   availability_status: string;
   available_from: string | null;
+  /** Present on backend reads (ListingRead.rental_unit); optional here to
+   *  keep structural fixtures valid. */
+  rental_unit?: { amenities?: OwnerAmenityItem[] } | null;
   price_components: OwnerPriceItem[];
   photos: OwnerPhotoItem[];
   created_at: string;
@@ -369,4 +386,40 @@ export const listLocations = (
   const q = search.trim();
   if (q) params.set("search", q);
   return request<LocationItem[]>(`/api/v1/locations?${params.toString()}`);
+};
+
+/** Full amenity row as returned by GET /api/v1/amenities. */
+export interface AmenityCatalogRow {
+  id: number;
+  slug: string;
+  label: string;
+  category: string | null;
+  icon_slug: string | null;
+  is_active: boolean;
+}
+
+/**
+ * Active amenity catalog (public reference data). Returns only the
+ * `{id, slug}` pairs the write path needs to resolve an owner's label
+ * choice; malformed rows are dropped rather than trusted. A network or
+ * shape failure rejects — callers must surface it, never treat it as
+ * "no amenities" (which would silently discard the owner's selection).
+ */
+export const getAmenityCatalog = async (): Promise<AmenityCatalogEntry[]> => {
+  const rows = await apiGet<AmenityCatalogRow[]>("/api/v1/amenities");
+  if (!Array.isArray(rows)) {
+    // Fail closed: a malformed body must surface as "couldn't load", never
+    // as "no amenities exist" (which would drop the owner's selection).
+    throw new Error("Amenity catalog response was not a list");
+  }
+  return rows
+    .filter(
+      (row) =>
+        row !== null &&
+        typeof row === "object" &&
+        Number.isInteger(row.id) &&
+        row.id > 0 &&
+        typeof row.slug === "string"
+    )
+    .map((row) => ({ id: row.id, slug: row.slug }));
 };

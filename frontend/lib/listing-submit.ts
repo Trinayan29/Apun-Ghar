@@ -100,34 +100,58 @@ export function mapFurnishing(
 /**
  * Human amenity label -> catalog slug. Slugs are the stable canonical
  * identity (backend seeds key on slug), but the unit endpoints accept only
- * numeric `amenity_ids` — so slugs must be resolved against a catalog
- * fetched from the backend (see resolveAmenityIds). There is currently no
- * catalog endpoint, so 4E-1 creates the unit without amenities and reports
- * the owner's selections as pending (see describeAmenities); a later phase
- * attaches them via PATCH once a catalog source exists.
+ * numeric `amenity_ids` — so slugs must be resolved against the catalog
+ * from GET /api/v1/amenities (see resolveAmenityIds). The catalog is
+ * fetched at send time; without it (or when a label has no slug) the
+ * selection must surface as an error, never be dropped.
  */
+/**
+ * Wizard label -> backend catalog slug.
+ *
+ * The two sides deliberately use different wording for the same amenity
+ * (the wizard says "AC", the backend row says "Air Conditioning"; the
+ * wizard says "Security", the backend says "Security Guard"). The slug is
+ * the stable identity both sides share, so it is the only reliable join
+ * key — labels must never be compared across the boundary.
+ */
+const AMENITY_SLUG_BY_LABEL: Record<string, string> = {
+  "Wi-Fi": "wifi",
+  AC: "ac",
+  Parking: "parking",
+  "Power backup": "power-backup",
+  Laundry: "laundry",
+  "Food / mess": "food-mess",
+  "Drinking water": "drinking-water",
+  Security: "security-guard",
+  "Attached bathroom": "attached-bath",
+  Balcony: "balcony",
+  "Kitchen access": "kitchen-access",
+  CCTV: "cctv",
+  Housekeeping: "housekeeping",
+};
+
+/** Backend catalog slug -> the wizard label that represents it. */
+const AMENITY_LABEL_BY_SLUG: Record<string, string> = Object.fromEntries(
+  Object.entries(AMENITY_SLUG_BY_LABEL).map(([label, slug]) => [slug, label])
+);
+
 export function mapAmenityToSlug(label: string): string | null {
-  const table: Record<string, string> = {
-    "Wi-Fi": "wifi",
-    AC: "ac",
-    Parking: "parking",
-    "Power backup": "power-backup",
-    Laundry: "laundry",
-    "Food / mess": "food-mess",
-    "Drinking water": "drinking-water",
-    Security: "security-guard",
-    "Attached bathroom": "attached-bath",
-    Balcony: "balcony",
-    "Kitchen access": "kitchen-access",
-    CCTV: "cctv",
-    Housekeeping: "housekeeping",
-  };
-  return table[label] ?? null;
+  return AMENITY_SLUG_BY_LABEL[label] ?? null;
+}
+
+/**
+ * Backend catalog slug -> wizard label, or null when the wizard has no
+ * choice for that slug. Used to re-hydrate a saved unit's amenities into
+ * the draft: joining on the slug (not the backend label) is what keeps the
+ * saved selection visible and prevents an edit from dropping it.
+ */
+export function mapAmenitySlugToLabel(slug: string): string | null {
+  return AMENITY_LABEL_BY_SLUG[slug] ?? null;
 }
 
 /**
  * One backend amenity catalog row. Ids are database-generated (never
- * hardcoded here) — callers obtain these from a backend catalog source.
+ * hardcoded here) — callers obtain these from GET /api/v1/amenities.
  */
 export interface AmenityCatalogEntry {
   id: number;
@@ -188,6 +212,66 @@ export function resolveAmenityIds(
     }
   }
   return { ids, missing };
+}
+
+/**
+ * Whether every owner-selected amenity can be attached, plus the labels
+ * that cannot. `catalogUnavailable` means the catalog could not be loaded
+ * at all (undefined), which is distinct from an unresolvable individual
+ * amenity. An empty selection is always attachable (nothing to resolve).
+ * Total: never throws.
+ */
+export interface AmenityResolution {
+  canAttach: boolean;
+  catalogUnavailable: boolean;
+  /** Owner-facing labels that could not be resolved (deduped). */
+  labels: string[];
+}
+
+export function unresolvedAmenityLabels(
+  draft: ListingDraft,
+  catalog: AmenityCatalogEntry[] | undefined
+): AmenityResolution {
+  const selected = [...new Set(draft.space.amenities)];
+  if (selected.length === 0) {
+    return { canAttach: true, catalogUnavailable: false, labels: [] };
+  }
+  if (catalog === undefined) {
+    return { canAttach: false, catalogUnavailable: true, labels: selected };
+  }
+  const { slugs, unknownLabels } = describeAmenities(draft);
+  const { missing } = resolveAmenityIds(slugs, catalog);
+  if (missing.length === 0 && unknownLabels.length === 0) {
+    return { canAttach: true, catalogUnavailable: false, labels: [] };
+  }
+  const missingSet = new Set(missing);
+  const labels = selected.filter((label) => {
+    const slug = mapAmenityToSlug(label);
+    return slug === null || missingSet.has(slug);
+  });
+  return { canAttach: false, catalogUnavailable: false, labels };
+}
+
+/**
+ * Owner-readable explanation for an amenity resolution failure. Named
+ * labels for a mismatch; an explicit load failure message otherwise.
+ */
+export function amenityFailureMessage(
+  labels: string[],
+  catalogUnavailable: boolean
+): string {
+  if (catalogUnavailable) {
+    return (
+      "We couldn't load the amenity list (it may still be loading), so " +
+      "your selected amenities weren't saved. Your choices are kept — " +
+      "wait a moment and retry."
+    );
+  }
+  return (
+    "These amenities couldn't be matched to Apun-Ghar's list: " +
+    `${labels.join(", ")}. Nothing was saved — remove or change them, then ` +
+    "retry."
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -264,9 +348,10 @@ export interface RentalUnitPayload {
   house_rules: string | null;
   /**
    * Backend amenity ids. Present only when the caller supplies a catalog
-   * (see resolveAmenityIds); omitted otherwise so the unit is created
-   * amenity-free and the selections stay pending in the draft instead of
-   * being sent under a key the backend rejects (extra="forbid").
+   * (see resolveAmenityIds); omitted otherwise. The submit/edit flows
+   * refuse to proceed with a non-empty selection and no resolvable
+   * catalog, so an omitted key always means "no amenities selected", never
+   * a silently discarded choice (extra="forbid" on the backend).
    */
   amenity_ids?: number[];
 }
@@ -318,8 +403,10 @@ export function serializeUnit(
   }
 
   // Amenities need backend ids, which only a catalog source can supply.
-  // Without one the key is omitted (unit created amenity-free, selections
-  // stay pending via describeAmenities) — never sent as slugs.
+  // When a catalog is provided the key carries the resolved ids (even []
+  // to clear); without one the key is omitted and the caller is
+  // responsible for surfacing the un-attached selection as an error —
+  // never sending slugs under a key the backend rejects.
   const amenity_ids =
     catalog === undefined
       ? undefined

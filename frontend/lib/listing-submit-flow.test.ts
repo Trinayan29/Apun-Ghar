@@ -121,15 +121,49 @@ describe("successful Property -> Unit -> Listing creation", () => {
     ]);
   });
 
-  it("reports pending amenities explicitly instead of dropping them", async () => {
-    const { transport } = okTransport({ property: 10, unit: 20, listing: 30 });
+  it("blocks the send with a clear error instead of dropping amenity selections", async () => {
+    const { calls, transport } = okTransport({ property: 10, unit: 20, listing: 30 });
     const draft = validDraft();
     draft.space.amenities = ["Wi-Fi", "Rooftop pool"];
     const result = await submitListingDraft(draft, transport);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.amenityIssue?.catalogUnavailable).toBe(true);
+    expect(result.amenityIssue?.labels).toEqual(["Wi-Fi", "Rooftop pool"]);
+    expect(result.error.length).toBeGreaterThan(0);
+    // The gate runs before any write: no partial mutation.
+    expect(calls).toEqual([]);
+  });
+
+  it("attaches amenity ids when a catalog resolves every selection", async () => {
+    const { calls, transport } = okTransport({ property: 10, unit: 20, listing: 30 });
+    const draft = validDraft();
+    draft.space.amenities = ["Wi-Fi", "AC"];
+    const result = await submitListingDraft(draft, transport, [
+      { id: 1, slug: "wifi" },
+      { id: 2, slug: "ac" },
+    ]);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.pendingAmenitySlugs).toEqual(["wifi"]);
-    expect(result.unknownAmenityLabels).toEqual(["Rooftop pool"]);
+    expect(result.pendingAmenitySlugs).toEqual([]);
+    expect(result.unknownAmenityLabels).toEqual([]);
+    const unitBody = calls[1].body as Record<string, unknown>;
+    expect(unitBody["amenity_ids"]).toEqual([1, 2]);
+  });
+
+  it("names the unresolvable amenity and blocks when the catalog misses it", async () => {
+    const { calls, transport } = okTransport({ property: 10, unit: 20, listing: 30 });
+    const draft = validDraft();
+    draft.space.amenities = ["Wi-Fi", "Rooftop pool"];
+    const result = await submitListingDraft(draft, transport, [
+      { id: 1, slug: "wifi" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.amenityIssue?.catalogUnavailable).toBe(false);
+    expect(result.amenityIssue?.labels).toEqual(["Rooftop pool"]);
+    expect(result.error).toContain("Rooftop pool");
+    expect(calls).toEqual([]);
   });
 });
 

@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
+from .amenities import router as amenities_router
 from .db import engine
 from .listings import router as listings_router
 from .locations import router as locations_router
@@ -24,6 +25,7 @@ app.add_middleware(
 app.include_router(users_router)
 app.include_router(owners_router)
 app.include_router(locations_router)
+app.include_router(amenities_router)
 app.include_router(properties_router)
 app.include_router(property_units_router)
 app.include_router(units_router)

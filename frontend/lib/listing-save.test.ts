@@ -61,7 +61,6 @@ const FORBIDDEN_KEYS = [
   "listing_id",
   "rental_unit_id",
   "owner_user_id",
-  "amenity_ids",
   "amenities",
   "localPublish",
   "currentChapter",
@@ -272,8 +271,66 @@ describe("serializeUnitPatch", () => {
       "smoking_allowed",
       "alcohol_allowed",
       "house_rules",
+      "amenity_ids",
     ]);
     expect(plan.body).not.toHaveProperty("amenity_ids");
+  });
+});
+
+describe("serializeUnitPatch amenity diffing", () => {
+  const catalog = [
+    { id: 1, slug: "wifi" },
+    { id: 4, slug: "parking" },
+    { id: 7, slug: "ac" },
+  ];
+
+  it("omits amenity_ids when the selection is unchanged", () => {
+    const s = snapshot();
+    s.space.amenities = ["Wi-Fi"];
+    const d = clone(s);
+    const plan = serializeUnitPatch(d, s, catalog);
+    expect(plan.body).not.toHaveProperty("amenity_ids");
+  });
+
+  it("emits resolved amenity_ids when the selection changes (catalog present)", () => {
+    const s = snapshot();
+    const d = clone(s);
+    d.space.amenities = ["Parking", "Wi-Fi"];
+    const plan = serializeUnitPatch(d, s, catalog);
+    expect(plan.issues).toEqual([]);
+    // Ids follow the owner's selection order, deduped.
+    expect(plan.body.amenity_ids).toEqual([4, 1]);
+  });
+
+  it("clears to [] with no catalog when the selection is emptied", () => {
+    const s = snapshot();
+    s.space.amenities = ["Wi-Fi"];
+    const d = clone(s);
+    d.space.amenities = [];
+    const plan = serializeUnitPatch(d, s, undefined);
+    expect(plan.body.amenity_ids).toEqual([]);
+    expect(plan.issues).toEqual([]);
+  });
+
+  it("blocks a changed selection with no catalog instead of dropping it", () => {
+    const s = snapshot();
+    const d = clone(s);
+    d.space.amenities = ["Wi-Fi"];
+    const plan = serializeUnitPatch(d, s, undefined);
+    expect(plan.send).toBe(false);
+    expect(plan.body).not.toHaveProperty("amenity_ids");
+    expect(plan.issues[0].field).toBe("space.amenities");
+    expect(plan.issues[0].message).toMatch(/couldn't load/i);
+  });
+
+  it("blocks a changed selection the catalog cannot resolve", () => {
+    const s = snapshot();
+    const d = clone(s);
+    d.space.amenities = ["Rooftop pool"];
+    const plan = serializeUnitPatch(d, s, catalog);
+    expect(plan.send).toBe(false);
+    expect(plan.body).not.toHaveProperty("amenity_ids");
+    expect(plan.issues[0].message).toContain("Rooftop pool");
   });
 });
 

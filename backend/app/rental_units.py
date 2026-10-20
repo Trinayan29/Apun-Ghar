@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from .amenities import AmenityRead
 from .auth import require_role
 from .db import get_db
 from .models import Amenity, Property, RentalUnit, User
@@ -33,17 +34,6 @@ COMPOSITION_FIELDS = (
     "sharing",
     "layout",
 )
-
-
-class AmenityRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    slug: str
-    label: str
-    category: str | None
-    icon_slug: str | None
-    is_active: bool
 
 
 class RentalUnitCreate(BaseModel):

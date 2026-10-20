@@ -434,6 +434,26 @@ describe("hydrateEditDraft", () => {
     expect(d.propertySource).toBe("existing");
     expect(d.place.placeName).toBe("Green View House");
   });
+
+  it("hydrates saved amenities by slug, in canonical order", () => {
+    const d = hydrateEditDraft({
+      listing: listing() as unknown as OwnerListingItem,
+      unit: unit({
+        amenities: [
+          { id: 4, slug: "parking", label: "Parking" },
+          { id: 1, slug: "wifi", label: "Wi-Fi" },
+          // The backend's own wording differs from the wizard's: this must
+          // still hydrate to the wizard label "AC".
+          { id: 2, slug: "ac", label: "Air Conditioning" },
+          { id: 99, slug: "rooftop-pool", label: "Rooftop pool" },
+        ],
+      }) as never,
+      property: property() as never,
+    });
+    // Joined on the slug, never the label. A slug this build cannot map is
+    // not representable in the wizard, so it is not surfaced as a choice.
+    expect(d.space.amenities).toEqual(["Wi-Fi", "AC", "Parking"]);
+  });
 });
 
 describe("edit-session storage", () => {

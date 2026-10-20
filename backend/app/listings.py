@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from .amenities import AmenityRead
 from .auth import require_role
 from .db import get_db
 from .models import (
@@ -41,17 +42,6 @@ def _strip_nonblank(v: str | None, field: str) -> str | None:
     if not v:
         raise ValueError(f"{field} cannot be blank")
     return v
-
-
-class AmenityRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    slug: str
-    label: str
-    category: str | None
-    icon_slug: str | None
-    is_active: bool
 
 
 class UnitNestedRead(BaseModel):

@@ -105,4 +105,14 @@ describe("public listing detail page", () => {
     ).toBeDefined();
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
+
+  it("renders the unit's amenities returned by the API", async () => {
+    const d = detail();
+    d.unit.amenities = ["Wi-Fi", "Attached bathroom"];
+    renderPage(async () => d);
+
+    expect(await screen.findByText("Sunny PG near campus")).toBeDefined();
+    expect(screen.getByText(/Wi-Fi/)).toBeDefined();
+    expect(screen.getByText(/Attached bathroom/)).toBeDefined();
+  });
 });

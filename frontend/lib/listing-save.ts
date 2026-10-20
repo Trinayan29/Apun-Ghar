@@ -18,11 +18,16 @@
  */
 
 import {
+  amenityFailureMessage,
+  describeAmenities,
   mapRentBasis,
+  resolveAmenityIds,
   serializeAvailability,
   serializePriceComponents,
   serializeProperty,
   serializeUnit,
+  unresolvedAmenityLabels,
+  type AmenityCatalogEntry,
   type AvailabilityPayload,
   type PriceComponentPayload,
   type RentBasisBackend,
@@ -256,6 +261,9 @@ export interface UnitPatchBody {
   smoking_allowed?: boolean | null;
   alcohol_allowed?: boolean | null;
   house_rules?: string | null;
+  /** Backend amenity ids. Sent only when the selection changed AND a
+   *  catalog resolved it (or the selection was cleared to []). */
+  amenity_ids?: number[];
 }
 
 /** Composition tuple: always sent together, never partially. */
@@ -271,18 +279,52 @@ export const COMPOSITION_KEYS = [
  * PATCH body with only changed fields, except composition: when any of
  * the five composition fields differs, the backend validates the MERGED
  * tuple, so the complete tuple (with explicit nulls) is always sent
- * together. amenity_ids is never sent (no catalog); property/listing
- * ids and lifecycle never appear.
+ * together. `amenity_ids` is sent only when the selected amenity set
+ * actually changed and a catalog resolves it — clearing to [] needs no
+ * catalog, while a changed non-empty selection with no resolvable catalog
+ * becomes a blocking issue (never a silent drop). Property/listing ids and
+ * lifecycle never appear.
  */
 export function serializeUnitPatch(
   draft: ListingDraft,
-  snapshot: ListingDraft
+  snapshot: ListingDraft,
+  catalog?: AmenityCatalogEntry[]
 ): ResourcePlan<UnitPatchBody> {
-  // No catalog source: amenity_ids key is absent, never invented.
   const next = serializeUnit(draft);
   const prev = serializeUnit(snapshot);
   const body: UnitPatchBody = {};
   const issues: SaveIssue[] = [];
+
+  // Amenities: compare the owner-facing selection (order-insensitive).
+  const desiredAmenities = [...new Set(draft.space.amenities)];
+  const savedAmenities = [...new Set(snapshot.space.amenities)];
+  const amenitiesChanged =
+    desiredAmenities.length !== savedAmenities.length ||
+    desiredAmenities.some((label) => !savedAmenities.includes(label));
+  if (amenitiesChanged) {
+    if (desiredAmenities.length === 0) {
+      // Clearing needs no catalog.
+      body.amenity_ids = [];
+    } else {
+      const resolution = unresolvedAmenityLabels(draft, catalog);
+      if (resolution.canAttach && catalog !== undefined) {
+        body.amenity_ids = resolveAmenityIds(
+          describeAmenities(draft).slugs,
+          catalog
+        ).ids;
+      } else {
+        issues.push(
+          issue(
+            "space.amenities",
+            amenityFailureMessage(
+              resolution.labels,
+              catalog === undefined
+            )
+          )
+        );
+      }
+    }
+  }
 
   const compositionChanged = COMPOSITION_KEYS.some(
     (k) => next[k] !== prev[k]
@@ -566,11 +608,14 @@ export interface SavePlan {
 /**
  * Pure aggregate plan for one save attempt. No I/O. Server-known facts
  * the draft cannot see (lifecycle, current rent_basis) arrive via ctx.
+ * `catalog` is the active amenity catalog (GET /api/v1/amenities), needed
+ * only when the amenity selection changes.
  */
 export function planSave(
   draft: ListingDraft,
   snapshot: ListingDraft,
-  ctx: SaveContext
+  ctx: SaveContext,
+  catalog?: AmenityCatalogEntry[]
 ): SavePlan {
   const issues: SaveIssue[] = [];
   if (!SERVER_BASES.includes(ctx.rentBasis as RentBasisBackend)) {
@@ -594,7 +639,7 @@ export function planSave(
   const serverBasis = ctx.rentBasis as RentBasisBackend;
 
   const property = serializePropertyPatch(draft, snapshot);
-  const unit = serializeUnitPatch(draft, snapshot);
+  const unit = serializeUnitPatch(draft, snapshot, catalog);
   const listing = serializeListingPatch(draft, snapshot);
 
   const draftBasis = draftBasisOf(draft);

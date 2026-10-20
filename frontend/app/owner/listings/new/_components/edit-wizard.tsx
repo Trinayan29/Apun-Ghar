@@ -41,6 +41,7 @@ import {
   type ListingDraft,
 } from "@/lib/listing-draft";
 import { createSubmitGuard, type SubmitGuard } from "@/lib/listing-submit-action";
+import { useAmenityCatalog } from "@/lib/use-amenity-catalog";
 import {
   IncludedChapter,
   KindChapter,
@@ -111,6 +112,11 @@ export function EditWizard({
   // itself is only replaced on adopted success; every other outcome
   // leaves draft/snapshot exactly as they were.
   const [saveUi, setSaveUi] = useState<SaveUiState>({ phase: "idle" });
+
+  // Active amenity catalog (GET /api/v1/amenities). Undefined until it
+  // resolves; a save that changes the amenity selection errors clearly
+  // (plan issue) rather than silently dropping it.
+  const amenityCatalog = useAmenityCatalog();
 
   const draft: ListingDraft | null = session?.draft ?? null;
   const isDirty = session !== null && editSessionDirty(session);
@@ -295,6 +301,7 @@ export function EditWizard({
           fromStep: opts.fromStep,
           fromDetail: opts.fromDetail,
           guard: saveGuardRef.current,
+          catalog: amenityCatalog,
           isCurrent: () => sessionRef.current === captured,
           onProgress: (event) => {
             if (event.type === "plan") {
@@ -348,7 +355,7 @@ export function EditWizard({
         window.scrollTo({ top: 0 });
       }
     },
-    [uid]
+    [uid, amenityCatalog]
   );
 
   // Retry from the failed logical step with a fresh plan (never stale

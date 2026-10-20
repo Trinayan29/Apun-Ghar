@@ -13,11 +13,13 @@ import {
   getOwnerProperty,
   getOwnerUnit,
   ApiError,
+  type OwnerAmenityItem,
   type OwnerListingItem,
   type OwnerPhotoItem,
   type OwnerPropertyItem,
 } from "./api";
 import {
+  AMENITIES,
   emptyDraft,
   prefillPlaceFromProperty,
   type AvailabilityDraft,
@@ -30,6 +32,7 @@ import {
   type RentalKind,
   type SpaceDraft,
 } from "./listing-draft";
+import { mapAmenitySlugToLabel } from "./listing-submit";
 
 /** Backend unit row with the full RentalUnitRead fields the API returns. */
 export interface OwnerUnitDetail {
@@ -53,6 +56,7 @@ export interface OwnerUnitDetail {
   smoking_allowed?: boolean | null;
   alcohol_allowed?: boolean | null;
   house_rules?: string | null;
+  amenities?: OwnerAmenityItem[];
 }
 
 export interface EditSourceData {
@@ -299,6 +303,35 @@ function hydratePhotos(photos: OwnerPhotoItem[]): PhotoDraft[] {
     });
 }
 
+/**
+ * Saved unit amenities -> draft labels, joined on the catalog SLUG.
+ *
+ * The backend's own label wording differs from the wizard's ("Air
+ * Conditioning" vs "AC", "Security Guard" vs "Security"), so labels must
+ * never be compared across the boundary — a label match would hide saved
+ * amenities from the edit form and delete them on the next amenity change.
+ * Only labels the wizard can represent are kept, in canonical order so
+ * diffs are stable. A server amenity whose slug this build does not know
+ * cannot be represented in the wizard: it is left off the draft, so it is
+ * neither shown nor preserved by an amenity edit (see the catalog-drift
+ * note in docs/SYSTEM_DESIGN.md).
+ */
+function hydrateAmenityLabels(
+  rows: OwnerAmenityItem[] | undefined
+): string[] {
+  if (!Array.isArray(rows)) return [];
+  const present = new Set(
+    rows
+      .map((row) =>
+        row && typeof row.slug === "string"
+          ? mapAmenitySlugToLabel(row.slug)
+          : null
+      )
+      .filter((label): label is string => label !== null)
+  );
+  return AMENITIES.filter((label) => present.has(label));
+}
+
 function hydrateSpace(unit: OwnerUnitDetail): SpaceDraft {
   const kind = reverseKind(unit.unit_type, unit.layout ?? null);
   const furnishing =
@@ -344,7 +377,7 @@ function hydrateSpace(unit: OwnerUnitDetail): SpaceDraft {
       smoking: unit.smoking_allowed ?? null,
       alcohol: unit.alcohol_allowed ?? null,
     },
-    amenities: [],
+    amenities: hydrateAmenityLabels(unit.amenities),
     bathrooms:
       typeof unit.bathrooms === "number" ? String(unit.bathrooms) : "",
     floorNo:
